@@ -61,12 +61,11 @@ class LocalOCR:
 
     def recognize(self, image: bytes) -> str:
         if self._engine is None:
-            from rapidocr_onnxruntime import RapidOCR
-            self._engine = RapidOCR(intra_op_num_threads=1, inter_op_num_threads=1)
+            from .ocr_engine import OCREngine
+            self._engine = OCREngine()
         # Keep low-confidence lines too: dropping one could manufacture a
         # shorter, incorrect match. Desktop text is upright, so skip rotation.
-        rows, _ = self._engine(image, use_cls=False, text_score=0.0)
-        rows = rows or []
+        rows = self._engine(image)
         # Small A/B/C/D badges are often below the detector's text size even
         # when option text is large. Recognize each visible badge independently;
         # never invent letters from its position or from the bank's order.
@@ -83,7 +82,7 @@ class LocalOCR:
             crop = pixels[y + inset_y:y + h - inset_y, x + inset_x:x + w - inset_x]
             crop = cv2.copyMakeBorder(crop, 4, 4, 4, 4, cv2.BORDER_CONSTANT, value=(255, 255, 255))
             crop = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-            recognized, _ = self._engine(crop, use_det=False, use_cls=False, text_score=0.0)
+            recognized = self._engine(crop, use_det=False)
             if recognized:
                 text, score = recognized[0][:2]
                 letter = text.strip().upper()

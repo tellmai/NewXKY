@@ -6,6 +6,16 @@ Git 仓库提供源码、测试和构建脚本。首次克隆后，需要先安�
 
 ## 使用
 
+### 免安装便携版
+
+将 `NewXKY-portable.zip` 整包解压，双击其中的 `启动软件.cmd`。无需安装 Python，无需启动时下载 OCR 模型；题库自行导入。请保留 `runtime`、`assets`、`newxky` 等文件夹。
+
+此便携版使用 Python 官网原始的签名运行程序。旧的 PyInstaller `dist/NewXKY/NewXKY.exe` 没有数字签名，可能被 Windows 智能应用控制阻止；便携版使用独立启动入口，不包含这个旧 exe。Windows 的信任判定以系统实际策略为准，项目不会修改安全功能。参考 [Microsoft Smart App Control 说明](https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/overview)。
+
+如启动失败，会显示提示并将详细错误写入 `data/startup-error.log`。也可以运行 `启动并查看错误.cmd` 查看错误信息。
+
+开发者在 Windows 上执行 `python scripts/build_portable.py` 可构建便携 ZIP。构建过程验证 Python 官方下载文件的 SHA-256 和 Authenticode 签名，从 PyPI 安装依赖，并将本地 OCR 模型一起打包。`requirements-portable.txt` 对应新版 OCR 运行环境，常规源码安装仍使用 `requirements.txt`。
+
 1. 安装依赖后双击 `启动软件.cmd`。如本机已有 `runtime` Python 运行环境则优先使用，其次使用 `.venv`，最后使用 `dist\NewXKY\NewXKY.exe`。
 2. 点击“导入 PDF 题库”，选择题库文件，可以多选。导入在后台执行，进度显示当前文件及页码。有效题目、去重数量和异常会显示在界面；异常题目不会参与匹配。
 3. 打开浏览器答题页，点击“框选 / 重选区域”，拖动选择**一道题的完整题干和全部选项**。Esc 或右键取消。
