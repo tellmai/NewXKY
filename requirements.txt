@@ -1,0 +1,4 @@
+PySide6-Essentials>=6.7,<7
+pdfplumber>=0.11,<1
+rapidocr-onnxruntime==1.4.4
+Pillow>=10,<13
