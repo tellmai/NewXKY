@@ -59,7 +59,8 @@ class PersonnelWorker(QThread):
                     await session.login(self.candidate, ocr)
                 except CaptchaFailure:
                     await session.wait_manual_login(self.candidate)
-                stage = await session.prepare_exam()
+                self.progress.emit("登录成功，已停留在个人主页；请手动点击“进入考试”")
+                stage = "已登录主页"
                 await session.page.bring_to_front()
                 self.ready.emit({"handle": self.handle, "stage": stage})
                 # The context belongs to the separately launched browser. Stop

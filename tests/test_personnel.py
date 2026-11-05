@@ -99,6 +99,10 @@ def test_ui_advances_one_person_changes_browser_and_clears_previous_session(tmp_
             pass
     monkeypatch.setattr(ui, "PersonnelWorker", Worker)
     window = ui.MainWindow(tmp_path)
+    assert window.auto_mode.currentData() == "screen"
+    assert "屏幕区域模式" in window.browser_status.text()
+    assert [window.detail_tabs.tabText(i) for i in range(window.detail_tabs.count())] == [
+        "备选 / 待考人员", "人员考试进度", "识别文字", "题库原文", "自动答题记录", "已导入题库", "导入 / 运行记录"]
     window.people_imported(IdentityImport(PEOPLE, [], "人员"))
     assert window.person_button.text() == "加载人员信息"
     assert window.people.current is None and not window.person_button.isEnabled()
@@ -112,7 +116,8 @@ def test_ui_advances_one_person_changes_browser_and_clears_previous_session(tmp_
     assert calls == [(PEOPLE[0], str(paths[0]))]
     assert not window.browser_combo.isEnabled() and not window.auto_button.isEnabled()
     handle = object()
-    window.person_ready({"handle": handle, "stage": "等待人工验证"})
+    window.person_ready({"handle": handle, "stage": "已登录主页"})
+    assert "手动点击“进入考试”" in window.person_hint.text()
     window.person_worker_finished()
     window._auto_person_position = 0
     window.auto_finished({"submitted": False, "reason": "暂停", "records": []})

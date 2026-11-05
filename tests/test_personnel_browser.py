@@ -117,16 +117,21 @@ def test_login_human_verification_answer_submission_and_two_retained_browsers(lo
                     browser = await p.chromium.connect_over_cdp(handle.endpoint)
                     session = SiteSession(p, SiteConfig(url, choice.path, 5000, True), browser=browser)
                     await session.login(PERSON, FixedOCR())
-                    assert await session.prepare_exam() == "等待人工验证"
-                    assert state["verifications"] == 0
+                    assert urlparse(session.page.url).path == "/exam/user/home"
+                    assert state["enters"] == state["starts"] == state["verifications"] == len(handles) - 1
                 # Reconnect after the login driver has exited; the same page survives.
                 async with async_playwright() as p:
                     browser = await p.chromium.connect_over_cdp(handle.endpoint)
                     page = next(page for page in browser.contexts[0].pages
                                 if urlparse(page.url).path == "/exam/user/home")
-                    assert await page.locator("#examScanModal").is_visible()
+                    assert not await page.locator("#examScanModal").is_visible()
+                    assert await page.get_by_role("button", name="进入考试", exact=True).is_visible()
                     if len(handles) == 1:
-                        # Simulate the human verification step only in this local fixture.
+                        # The person enters the exam and verifies manually.
+                        # These clicks belong only to the local test fixture.
+                        await page.get_by_role("button", name="进入考试", exact=True).click()
+                        await page.get_by_role("button", name="开始考试", exact=True).click()
+                        await page.locator("#examScanModal").wait_for(state="visible")
                         await page.locator("#verify").click()
                         await page.wait_for_url("**/exam/user/exam/1?start=0")
                         await page.evaluate("globalThis.chrome={runtime:{id:'newxky-test',onMessage:{addListener(fn){globalThis.__receive=fn}}}}")
@@ -155,14 +160,14 @@ def test_login_human_verification_answer_submission_and_two_retained_browsers(lo
                         result = await page.evaluate("getTestResult()")
                         assert result["submitted"]
                         assert [sorted(v) for v in result["selections"]] == [sorted(v) for v in result["expected"]]
-                        state["verifications"] = 0
             async with async_playwright() as p:
                 first = await p.chromium.connect_over_cdp(handles[0].endpoint)
                 assert await first.contexts[0].pages[0].locator("#success").is_visible()
                 if len(handles) == 2:
                     assert handles[0].profile != handles[1].profile
                     assert handles[0].choice.path != handles[1].choice.path
-            assert state["posts"] == state["enters"] == state["starts"] == len(handles)
+            assert state["posts"] == len(handles)
+            assert state["enters"] == state["starts"] == state["verifications"] == 1
         finally:
             async with async_playwright() as p:
                 for handle in handles:
@@ -188,7 +193,8 @@ def test_login_captcha_retry_and_manual_browser_fallback(local_site, tmp_path):
                 await session.page.locator("#loginButton").click()
                 await waiting
                 assert state["posts"] == 4
-                assert await session.prepare_exam() == "等待人工验证"
+                assert urlparse(session.page.url).path == "/exam/user/home"
+                assert state["enters"] == state["starts"] == 0
             finally:
                 await close_test_browser(p, handle)
     asyncio.run(run())
@@ -243,6 +249,48 @@ def test_cancelling_personnel_worker_preserves_browser(local_site, tmp_path, mon
             async with async_playwright() as p:
                 browser = await p.chromium.connect_over_cdp(worker.handle.endpoint)
                 assert any(urlparse(page.url).path == "/exam/" for page in browser.contexts[0].pages)
+        asyncio.run(inspect())
+    finally:
+        worker.cancel()
+        worker.wait(10000)
+        if worker.handle is not None:
+            async def cleanup():
+                async with async_playwright() as p:
+                    await close_test_browser(p, worker.handle)
+            asyncio.run(cleanup())
+
+
+def test_personnel_worker_stops_on_home_without_entering_exam(local_site, tmp_path, monkeypatch):
+    from playwright.async_api import async_playwright
+    from PySide6.QtWidgets import QApplication
+    from newxky import login_ocr, personnel_controller
+    url, state = local_site
+    choice = browser_choices()[0]
+    app = QApplication.instance() or QApplication([])
+    async def headless_launch(data_dir, explicit, **kwargs):
+        return await launch_retained_browser(data_dir, explicit, headless=True, **kwargs)
+    class OCR(FixedOCR):
+        def close(self):
+            pass
+    monkeypatch.setattr(personnel_controller, "launch_retained_browser", headless_launch)
+    monkeypatch.setattr(login_ocr, "LocalOCR", OCR)
+    worker = personnel_controller.PersonnelWorker(tmp_path, PERSON, SiteConfig(url, choice.path, 5000, True))
+    ready, failures = [], []
+    worker.ready.connect(ready.append)
+    worker.failed.connect(failures.append)
+    worker.start()
+    try:
+        assert worker.wait(15000)
+        app.processEvents()
+        assert not failures and len(ready) == 1
+        assert ready[0]["stage"] == "已登录主页"
+        assert state["posts"] == 1 and state["enters"] == state["starts"] == state["verifications"] == 0
+        async def inspect():
+            async with async_playwright() as p:
+                browser = await p.chromium.connect_over_cdp(worker.handle.endpoint)
+                page = next(page for page in browser.contexts[0].pages if urlparse(page.url).path == "/exam/user/home")
+                assert await page.get_by_role("button", name="进入考试", exact=True).is_visible()
+                assert not await page.locator("#examScanModal").is_visible()
         asyncio.run(inspect())
     finally:
         worker.cancel()

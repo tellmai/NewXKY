@@ -136,6 +136,14 @@ class ExamQueue:
         self.records[self.position:] = [r for r in self.pending
             if r.candidate.row not in selected or r.status not in {"待考试", "加载失败"}]
 
+    def return_to_pool(self, rows):
+        selected = set(rows)
+        removed = [r for r in self.records if r.candidate.row in selected]
+        completed_prefix = self.records[:self.position]
+        self.position = sum(r.candidate.row not in selected for r in completed_prefix)
+        self.records = [r for r in self.records if r.candidate.row not in selected]
+        return removed
+
     def begin(self):
         record = self.current
         if record is None or record.status not in {"待考试", "加载失败"}:

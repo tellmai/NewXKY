@@ -195,7 +195,7 @@ class SiteSession:
             await asyncio.gather(manual_task, closed_task, return_exceptions=True)
 
     async def wait_manual_login(self, candidate, timeout=1800):
-        self.progress("请在浏览器中填写登录验证码并登录；登录后软件会继续进入考试")
+        self.progress("请在浏览器中填写登录验证码并登录；登录成功后保留个人主页")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self.page.is_closed():
@@ -206,57 +206,6 @@ class SiteSession:
                 return
             await asyncio.sleep(.3)
         raise LoginFailure("等待人工登录超时，当前网页已保留")
-
-    async def prepare_exam(self):
-        """Port of Answering-S entry flow, ending before personal verification."""
-        import re
-        from playwright.async_api import Error
-
-        self.check_origin()
-        await self.page.wait_for_load_state("load")
-        visible = self.page.locator(":visible")
-        scan = self.page.locator("#examScanModal")
-        if await scan.is_visible():
-            return "等待人工验证"
-        entry = (self.page.locator('[data-action="exam"]')
-                 .or_(self.page.get_by_role("button", name=re.compile(r"^\s*进入\s*考试\s*$")))
-                 .or_(self.page.get_by_role("link", name=re.compile(r"^\s*进入\s*考试\s*$")))
-                 .and_(visible))
-        await entry.first.wait_for(state="visible")
-        if await entry.count() != 1:
-            raise LoginFailure("未找到唯一的进入考试入口，请查看浏览器页面")
-        self.progress("登录成功，正在点击进入考试")
-        await entry.click()
-        deadline = time.monotonic() + self.config.timeout_ms / 1000
-        start_clicked = queue_clicked = False
-        while time.monotonic() < deadline:
-            if self.page.is_closed():
-                raise LoginFailure("浏览器页面已关闭")
-            self.check_origin()
-            try:
-                if await scan.is_visible():
-                    return "等待人工验证"
-                # A previously verified session can enter the question page directly.
-                if await self.page.locator('#questionStem:visible, #questionText:visible, [data-question-stem]:visible').count():
-                    return "已进入答题页"
-                text = await self.page.locator("body").inner_text()
-                if any(t in text for t in ("暂不能参加考试", "暂时无法开考", "浏览器暂不支持考试",
-                                          "扫码验证暂不可用", "登录状态已失效", "系统维护", "进入考试失败")):
-                    raise LoginFailure("网站暂时无法开考，请查看保留的网页提示")
-                start = self.page.get_by_role("button", name="开始考试", exact=True).and_(visible)
-                if not start_clicked and await start.count() == 1:
-                    self.progress("正在点击开始考试，随后请在浏览器中完成人员验证")
-                    await start.click()
-                    start_clicked = True
-                queue = self.page.get_by_role("button", name="现在排队", exact=True).and_(visible)
-                if not queue_clicked and await queue.count() == 1:
-                    await queue.click()
-                    queue_clicked = True
-                    deadline = time.monotonic() + 1800
-            except Error:
-                self.check_origin()
-            await asyncio.sleep(.2)
-        raise LoginFailure("等待考试验证页面超时，浏览器已保留，请人工检查")
 
     async def close(self):
         try:
