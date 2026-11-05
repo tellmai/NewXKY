@@ -9,16 +9,18 @@ HEADERS = ("所在的区县", "姓名", "身份证号")
 
 
 class PersonnelResults:
-    def __init__(self, data_dir, candidates):
+    def __init__(self, data_dir, candidates, journal=None):
         self.candidates = tuple(candidates)
         self.root = Path(data_dir) / "人员结果" / f"{datetime.now():%Y%m%d-%H%M%S}-{uuid4().hex[:6]}"
         self.directory = self.root
         self._lock = Lock()
+        self.journal = journal
 
     def save(self, completed_ids):
         completed = set(completed_ids)
-        done = [c for c in self.candidates if c.id_number in completed]
-        remaining = [c for c in self.candidates if c.id_number not in completed]
+        is_done = lambda c:c.key in completed or c.id_number in completed
+        done = [c for c in self.candidates if is_done(c)]
+        remaining = [c for c in self.candidates if not is_done(c)]
         with self._lock:
             copied = False
             try:
@@ -30,8 +32,9 @@ class PersonnelResults:
                 self._write_pair(directory, done, remaining)
                 self.directory = directory
                 copied = True
+            history = self.journal.export() if self.journal else None
             return {"directory": self.directory, "completed": len(done),
-                    "incomplete": len(remaining), "saved_copy": copied}
+                    "incomplete": len(remaining), "saved_copy": copied, "history":history}
 
     def _write_pair(self, directory, done, remaining):
         directory.mkdir(parents=True, exist_ok=True)

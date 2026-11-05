@@ -2,6 +2,7 @@
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from uuid import uuid4
 
 from .bank import normalized
 from .exam_view import DialogView, ExamView
@@ -44,12 +45,15 @@ class AutoResolver:
     def __init__(self, index):
         self.index = index
         self._queries = {}
+        self.by_stem = {}
+        for question, stem in zip(index.questions,index.stems):
+            self.by_stem.setdefault(stem,[]).append(question)
 
     def resolve(self, stem, options) -> Resolution:
         key = normalized(clean_stem(stem))
         if not key:
             return Resolution(None,reason="没有识别到可用题干")
-        exact = [q for q,s in zip(self.index.questions,self.index.stems) if s == key]
+        exact = self.by_stem.get(key,[])
         candidates = exact
         method = "完整题干"
         if not exact:
@@ -153,6 +157,7 @@ class AutoSession:
     There is deliberately no default answer and no top-similarity selection.
     """
     def __init__(self,index):
+        self.session_id = uuid4().hex
         self.resolver = AutoResolver(index)
         self.state = "current"
         self.records = []
@@ -174,6 +179,7 @@ class AutoSession:
         self.resume_state = None
         self.deadline = 0
         self.retry_count = 0
+        self.identity_retries = 0
         self.pending = None
         self.started_page = None
         self.scrolls = 0
@@ -277,6 +283,12 @@ class AutoSession:
     def _merge(self,view):
         if not self.stem and normalized(view.stem):
             self.stem = view.stem
+        elif self.verified_mapping is None and normalized(view.stem):
+            current,previous = normalized(clean_stem(view.stem)),normalized(clean_stem(self.stem))
+            # A bad first frame must not pin a header/partial stem for the
+            # entire question. Upgrade only to a complete stored bank stem.
+            if current in self.resolver.by_stem and previous not in self.resolver.by_stem:
+                self.stem = view.stem
         for option in view.options:
             old = self.options.get(option.letter)
             value = normalized(option.text)
@@ -351,6 +363,7 @@ class AutoSession:
                     self.pending = (option.letter,desired)
                     self.deadline = now+5
                     self.retry_count = 0
+                    self.identity_retries = 0
                     self.state = "verify"
                     self.before = view_key(view)
                     self.before_view = view
@@ -452,8 +465,15 @@ class AutoSession:
                     self.scrolls += 1
                     return self._scroll(view,720,"正在滚回题干顶部")
         if self.state == "verify":
-            if same_question(view,self.before_view,self.question) is False:
+            same = same_question(view,self.before_view,self.question)
+            if same is False:
+                moved = (view.number is not None and self.before_view.number is not None
+                         and view.number != self.before_view.number)
+                if not moved and view.source != "dom" and self.identity_retries < 2 and now < self.deadline:
+                    self.identity_retries += 1
+                    return Action("reread",message="选中高亮后识别有差异，正在重新核对同一道题",delay=180)
                 return self.stop("选择答案后题目内容发生变化，已停止")
+            self.identity_retries = 0
             letter,desired = self.pending
             option = next((o for o in view.options if o.letter == letter),None)
             if option and option.selected == desired:

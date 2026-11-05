@@ -165,6 +165,7 @@ async def launch_retained_browser(data_dir, explicit="", *, headless=False, prog
             continue
         progress(f"正在打开 {choice.name}")
         deadline = time.monotonic() + 20
+        exited_at = None
         while time.monotonic() < deadline:
             try:
                 port, socket_path = (profile / "DevToolsActivePort").read_text(encoding="utf-8").splitlines()[:2]
@@ -172,8 +173,16 @@ async def launch_retained_browser(data_dir, explicit="", *, headless=False, prog
                     return BrowserHandle(process, profile, f"http://127.0.0.1:{port}", choice)
             except (OSError, ValueError):
                 pass
-            if process.poll() is not None:
-                break
+            exit_code = process.poll()
+            if exit_code is not None:
+                if exit_code != 0:
+                    break
+                # Edge can hand off to its browser child and return success
+                # before that child has published DevToolsActivePort.
+                if exited_at is None:
+                    exited_at = time.monotonic()
+                elif time.monotonic()-exited_at >= 3:
+                    break
             await asyncio.sleep(.1)
         if explicit:
             raise ValueError("浏览器没有提供本机连接入口，请使用新版 Chrome / Edge；已打开的窗口可手动保留")

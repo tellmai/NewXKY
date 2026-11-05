@@ -1,9 +1,11 @@
 import json
 import sys
 import time
+import sqlite3
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRect, Qt, QThreadPool, QTimer, QUrl
 from PySide6.QtGui import QFont, QGuiApplication, QIcon, QImage, QDesktopServices
@@ -28,9 +30,11 @@ from .workers import Worker
 from .auto_controller import AutoController
 from .browser_bridge import BrowserBridge
 from .browsers import browser_path_key, discover_browsers
-from .identities import ExamQueue, SiteConfig, load_identities
+from .identities import ExamQueue, SiteConfig, load_identities, load_identity_folder
 from .personnel_controller import PersonnelWorker
 from .personnel_results import PersonnelResults
+from .progress import ProgressJournal
+from .roster import RosterList
 
 
 STYLE = """
@@ -123,9 +127,22 @@ def card():
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, *, app_dir=None):
         super().__init__()
         self.data_dir = data_dir
+        self.app_dir = Path(app_dir) if app_dir is not None else data_dir
+        self.people_folder = ""
+        self.journal = None
+        self._journal_error = ""
+        self._history_export_busy = False
+        self._history_export_dirty = False
+        try:
+            self.journal = ProgressJournal(self.app_dir / "人员记录")
+            completed_total = self.journal.total
+        except (OSError,sqlite3.Error) as error:
+            self._journal_error = str(error)
+            completed_total = None
+        self.completed_total = completed_total
         self.bank = Bank()
         self.index = KnowledgeIndex([])
         self.ocr = LocalOCR()
@@ -175,8 +192,14 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1060, 800)
         self._build_ui()
         self._read_settings()
+        self.update_completion_label()
+        if self._journal_error:
+            self.log("累计完成记录暂不可用："+self._journal_error)
         self.refresh_controls()
         QTimer.singleShot(0, self.restore_bank)
+        QTimer.singleShot(0, self.restore_people_folder)
+        if completed_total:
+            QTimer.singleShot(0,self.save_history)
 
     def _build_ui(self):
         root = QWidget()
@@ -210,6 +233,15 @@ class MainWindow(QMainWindow):
         bank_layout.addWidget(self.progress)
         self.import_status = label("支持多份 PDF；自动保存、去重", "muted", True)
         bank_layout.addWidget(self.import_status)
+        completion_row = QHBoxLayout()
+        self.completion_label = label("累计完成：0 人次", "eyebrow")
+        completion_row.addWidget(self.completion_label,1)
+        self.history_open = QPushButton("记录")
+        self.history_open.setObjectName("compact")
+        self.history_open.setToolTip("打开每日及累计的已完成、未完成人员记录")
+        self.history_open.clicked.connect(self.open_history)
+        completion_row.addWidget(self.history_open)
+        bank_layout.addLayout(completion_row)
         sidebar.addWidget(bank_card)
         region_card, region_layout = card()
         region_layout.addWidget(label("02 / 识别区域", "eyebrow"))
@@ -289,6 +321,12 @@ class MainWindow(QMainWindow):
         people_header = QHBoxLayout()
         people_header.addWidget(label("人员考试 / 逐人加载", "eyebrow"))
         people_header.addStretch()
+        self.people_folder_button = QPushButton("自动加载文件夹…")
+        self.people_folder_button.clicked.connect(self.choose_people_folder)
+        people_header.addWidget(self.people_folder_button)
+        self.people_reload_button = QPushButton("重新加载")
+        self.people_reload_button.clicked.connect(self.restore_people_folder)
+        people_header.addWidget(self.people_reload_button)
         self.people_import_button = QPushButton("导入人员信息…")
         self.people_import_button.clicked.connect(self.import_people)
         people_header.addWidget(self.people_import_button)
@@ -430,7 +468,7 @@ class MainWindow(QMainWindow):
         self.people_search.setClearButtonEnabled(True)
         self.people_search.textChanged.connect(self.refresh_candidate_pool)
         pool_layout.addWidget(self.people_search)
-        self.candidate_list = QListWidget()
+        self.candidate_list = RosterList()
         self.candidate_list.setAccessibleName("备选人员")
         self.candidate_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.candidate_list.setAlternatingRowColors(True)
@@ -449,15 +487,18 @@ class MainWindow(QMainWindow):
         self.waiting_title = label("待考人员 · 0 人", "eyebrow")
         waiting_layout.addWidget(self.waiting_title)
         waiting_layout.addWidget(label("鼠标拖拽排序，始终先进行最上方就绪人员的考试", "muted", True))
-        self.waiting_list = QListWidget()
+        self.waiting_list = RosterList(reorder=True)
         self.waiting_list.setAccessibleName("待考人员，拖拽可排序")
-        self.waiting_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.waiting_list.setDragDropMode(QAbstractItemView.DragDrop)
         self.waiting_list.setDefaultDropAction(Qt.MoveAction)
         self.waiting_list.setDragDropOverwriteMode(False)
         self.waiting_list.setDropIndicatorShown(True)
         self.waiting_list.setAlternatingRowColors(True)
         self.waiting_list.setMinimumHeight(120)
         self.waiting_list.model().rowsMoved.connect(self.waiting_people_moved)
+        self.candidate_list.peer,self.waiting_list.peer = self.waiting_list,self.candidate_list
+        self.waiting_list.transfer_requested.connect(self.drop_waiting_people)
+        self.candidate_list.transfer_requested.connect(lambda rows,position:self.return_progress_people(rows))
         waiting_layout.addWidget(self.waiting_list, 1)
         self.remove_people_button = QPushButton("移回备选人员")
         self.remove_people_button.clicked.connect(self.remove_waiting_people)
@@ -544,6 +585,25 @@ class MainWindow(QMainWindow):
         if path:
             self.import_people_path(path)
 
+    def choose_people_folder(self):
+        folder = QFileDialog.getExistingDirectory(self,"选择启动时自动加载的人员信息文件夹",self.people_folder)
+        if folder:
+            self.people_folder = str(Path(folder).resolve())
+            self.people_folder_button.setToolTip(self.people_folder)
+            self._save_settings()
+            self.restore_people_folder()
+
+    def restore_people_folder(self):
+        if (not self.people_folder or self.personnel_worker or self.personnel_importing
+                or self.auto.active or self.auto.busy or self._closing):
+            return
+        folder = self.people_folder
+        self.personnel_importing = True
+        self.person_hint.setText("正在加载人员文件夹内的全部 Excel…")
+        self.refresh_controls()
+        self.launch(lambda _:load_identity_folder(folder,excluded=(self.app_dir/"人员记录",self.data_dir/"人员结果")),
+                    self.people_imported,self.people_import_failed)
+
     def import_people_path(self, path):
         if self.personnel_worker or self.personnel_importing or self.auto.active or self._closing:
             return
@@ -561,7 +621,12 @@ class MainWindow(QMainWindow):
         self._auto_person_position = None
         self.candidates = result.candidates
         self.people = ExamQueue()
-        self.results_store = PersonnelResults(self.data_dir, self.candidates)
+        if self.journal:
+            try:
+                self.journal.register(self.candidates)
+            except (OSError,sqlite3.Error) as error:
+                self.log(f"人员历史记录保存失败：{error}")
+        self.results_store = PersonnelResults(self.data_dir, self.candidates,self.journal)
         self.results_directory = None
         self.results_summary.setText("正在保存人员结果…")
         self.results_open.setEnabled(False)
@@ -569,7 +634,7 @@ class MainWindow(QMainWindow):
         self.save_people_results()
         self.people_search.clear()
         self.detail_tabs.setCurrentWidget(self.roster_widget)
-        self.person_hint.setText(f"已导入 {len(result.candidates)} 位备选人员；请按姓名搜索并添加到待考列表，拖拽调整考试顺序。")
+        self.person_hint.setText(f"已从 {result.files} 个文件导入 {len(result.candidates)} 人，去重 {result.duplicates} 条；可搜索或拖拽添加至待考。")
         self.log(f"人员导入完成：{len(result.candidates)} 人，跳过 {len(result.issues)} 条异常或重复记录。")
         for issue in result.issues:
             self.log(issue)
@@ -597,8 +662,6 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(f"{c.name} · {c.district} · {record.status}")
             item.setData(Qt.UserRole, c.row)
             item.setToolTip("拖动调整顺序；软件始终从最上方的就绪人员开始")
-            if record.status not in {"待考试", "加载失败"}:
-                item.setFlags(item.flags() & ~Qt.ItemIsDragEnabled)
             self.waiting_list.addItem(item)
             if c.row == selected_row:
                 self.waiting_list.setCurrentItem(item)
@@ -643,6 +706,24 @@ class MainWindow(QMainWindow):
         self.people.remove(rows)
         self.refresh_people()
         self.refresh_controls()
+
+    def drop_waiting_people(self, rows, position):
+        if self.personnel_worker or self.personnel_importing or self.auto.active or self.auto.busy or self._closing:
+            return
+        available = {c.row:c for c in self.candidates if not any(r.candidate.row==c.row for r in self.people.records)}
+        added = [available[row] for row in rows if row in available]
+        if not added:
+            return
+        before = [r.candidate.row for r in self.people.pending]
+        self.people.add(added)
+        minimum = 1 if self.people.current and self.people.current.status not in {"待考试","加载失败"} else 0
+        position = max(minimum,min(position,len(before)))
+        order = before[:position]+[c.row for c in added]+before[position:]
+        self.people.reorder(order)
+        self.people_search.clear()
+        self.refresh_people()
+        self.refresh_controls()
+        self.person_hint.setText(f"已拖入 {len(added)} 人；待考列表按当前顺序逐人加载。")
 
     def waiting_people_moved(self, *args):
         rows = [self.waiting_list.item(i).data(Qt.UserRole) for i in range(self.waiting_list.count())]
@@ -714,8 +795,9 @@ class MainWindow(QMainWindow):
 
     def save_people_results(self):
         if self.results_store is None:
+            self.save_history()
             return
-        completed = frozenset(r.candidate.id_number for r in self.people.records if r.status == "已完成")
+        completed = frozenset(r.candidate.key for r in self.people.records if r.status == "已完成")
         self._pending_result_exports[self.results_store] = completed
         self._start_result_export()
 
@@ -731,12 +813,14 @@ class MainWindow(QMainWindow):
 
     def _people_results_saved(self, store, result):
         self._result_export_busy = False
+        if result.get("history"):
+            self._history_saved(result["history"])
         if store is self.results_store:
             self.results_directory = result["directory"]
             self.results_summary.setText(f"已完成 {result['completed']} · 未完成 {result['incomplete']}")
             self.results_summary.setToolTip(str(self.results_directory))
             self.results_open.setEnabled(True)
-            self.results_retry.hide()
+            self.results_retry.setVisible(bool((result.get("history") or {}).get("copies")))
             if result["saved_copy"]:
                 self.log(f"原结果文件正在使用，最新两份人员结果已另存：{self.results_directory}")
             else:
@@ -753,8 +837,43 @@ class MainWindow(QMainWindow):
         self._start_result_export()
 
     def open_people_results(self):
-        if self.results_directory is not None:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.results_directory.resolve())))
+        directory = self.journal.directory if self.journal else self.results_directory
+        if directory is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory.resolve())))
+
+    def update_completion_label(self):
+        text = f"累计完成：{self.completed_total:,} 人次" if self.completed_total is not None else "累计记录暂不可用"
+        self.completion_label.setText(text)
+        self.completion_label.setToolTip("仅确认交卷成功后增加；同一场考试的重复通知不重复计数。记录跨重启保留。")
+
+    def open_history(self):
+        if self.journal:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.journal.directory.resolve())))
+
+    def save_history(self):
+        if self.journal is None or self._closing:
+            return
+        self._history_export_dirty = True
+        if self._history_export_busy:
+            return
+        self._history_export_busy = True
+        self._history_export_dirty = False
+        self.launch(lambda _:self.journal.export(),self._history_saved,self._history_failed)
+
+    def _history_saved(self, result):
+        self.completed_total = self.journal.total
+        self.update_completion_label()
+        if result.get("copies"):
+            self.log("部分历史 Excel 正在使用，最新结果已另存更新文件；关闭 Excel 后可重新保存。")
+            self.results_retry.show()
+        self._history_export_busy = False
+        if self._history_export_dirty:
+            self.save_history()
+
+    def _history_failed(self, message):
+        self._history_export_busy = False
+        self.results_retry.show()
+        self.log("每日及累计人员 Excel 保存失败："+message)
 
     def create_people_progress_menu(self, position):
         item = self.people_table.itemAt(position)
@@ -909,6 +1028,8 @@ class MainWindow(QMainWindow):
         self.floating.auto_button.setText(self.auto_button.text())
         self.floating.auto_button.setEnabled(self.auto_button.isEnabled())
         person_ready = not personnel_busy and not self.auto.active and not self.auto.busy and not self._closing
+        self.people_folder_button.setEnabled(person_ready)
+        self.people_reload_button.setEnabled(person_ready and bool(self.people_folder))
         for widget in (self.browser_combo, self.browser_refresh, self.browser_browse, self.people_import_button):
             widget.setEnabled(person_ready)
         current = self.people.current
@@ -923,6 +1044,8 @@ class MainWindow(QMainWindow):
             widget.setEnabled(person_ready)
         self.waiting_list.setDragEnabled(person_ready)
         self.waiting_list.setAcceptDrops(person_ready)
+        self.candidate_list.setDragEnabled(person_ready)
+        self.candidate_list.setAcceptDrops(person_ready)
 
     def show_search(self):
         if self.search_window is None:
@@ -1215,6 +1338,18 @@ class MainWindow(QMainWindow):
         self.sync_floating()
 
     def auto_finished(self,report):
+        if report["submitted"] and self.journal:
+            session_id = report.get("session_id") or getattr(self.auto.session,"session_id",None) or uuid4().hex
+            report["session_id"] = session_id
+            candidate = (self.people.current.candidate if self.people.current
+                         and self._auto_person_position == self.people.position else None)
+            try:
+                self.completed_total = self.journal.record_success(session_id,candidate)
+                self.update_completion_label()
+            except (OSError,sqlite3.Error) as error:
+                self.log(f"成功交卷计数未保存：{error}")
+            if candidate is None:
+                self.save_history()
         self.log(report["reason"])
         lines = [report["reason"],""]
         for record in report["records"]:
@@ -1357,6 +1492,10 @@ class MainWindow(QMainWindow):
         try:
             data = json.loads((self.data_dir / "settings.json").read_text(encoding="utf-8"))
             self.refresh_browsers(data.get("browser_path", ""))
+            self.people_folder = data.get("people_folder","")
+            if not isinstance(self.people_folder,str):
+                self.people_folder = ""
+            self.people_folder_button.setToolTip(self.people_folder or "选择后每次启动会自动加载全部 .xlsx")
             rect = QRect(*data["region"]) if data.get("region") else QRect()
             if rect.width() >= 120 and rect.height() >= 80 and any(s.geometry().contains(rect) for s in QGuiApplication.screens()):
                 self.region = rect
@@ -1371,7 +1510,8 @@ class MainWindow(QMainWindow):
             path = self.data_dir / "settings.json"
             temporary = path.with_suffix(".tmp")
             temporary.write_text(json.dumps({"region": self.region.getRect() if self.region is not None else None,
-                                             "browser_path": self.browser_combo.currentData() or ""}), encoding="utf-8")
+                                             "browser_path": self.browser_combo.currentData() or "",
+                                             "people_folder":self.people_folder}), encoding="utf-8")
             temporary.replace(path)
         except OSError as error:
             self.log(f"区域设置未保存：{error}")
@@ -1409,7 +1549,7 @@ def run(data_dir=None, *, hide_console=False):
     app.setFont(QFont("Microsoft YaHei UI", 10))
     app.setStyleSheet(STYLE)
     root = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
-    window = MainWindow(Path(data_dir) if data_dir else root / "data")
+    window = MainWindow(Path(data_dir) if data_dir else root / "data",app_dir=root)
     if hide_console and sys.platform == "win32":
         # Only hide this GUI application's own launch console. Other windows
         # and system settings are never touched; CLI diagnostics stay visible.

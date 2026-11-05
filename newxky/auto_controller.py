@@ -31,6 +31,7 @@ class AutoController(QObject):
         self.binding=None
         self.escape=None
         self.previous_view=None
+        self.force_ocr=False
         self.generation = 0
         self.stopped_at = -1e9
         self.timer = QTimer(self)
@@ -58,6 +59,7 @@ class AutoController(QObject):
         self.binding=self.bridge.binding if mode=="dom" and self.bridge else None
         self.region = QRect(region) if region is not None else None
         self.previous_view=self.session.last_view
+        self.force_ocr=False
         self.active = True
         self.status.emit("从当前题继续自动答题；Esc 暂停" if resume else "从当前题开始自动答题；Esc 暂停")
         if mode=="dom":
@@ -89,6 +91,7 @@ class AutoController(QObject):
             self.session.stop(reason)
         self.status.emit(reason)
         self.finished.emit({"reason":reason,"submitted":self.session.submitted if self.session else False,
+                            "session_id":self.session.session_id if self.session else None,
                             "records":list(self.session.records) if self.session else []})
 
     def _tick(self):
@@ -126,10 +129,12 @@ class AutoController(QObject):
         token = self.generation
         self.busy = True
         started = time.monotonic()
+        fresh,self.force_ocr = self.force_ocr,False
         def infer(_):
             import cv2
             import numpy as np
-            layout = self.ocr.recognize_layout(content,reuse_text=True)
+            layout = (self.ocr.recognize_layout(content,force=True) if fresh else
+                      self.ocr.recognize_layout(content,reuse_text=True))
             pixels = cv2.imdecode(np.frombuffer(content,np.uint8),cv2.IMREAD_COLOR)
             return layout,parse_exam(layout,pixels,self.previous_view),parse_dialog(layout,pixels) if whole_window else None
         job = Worker(infer)
@@ -161,6 +166,8 @@ class AutoController(QObject):
             if action.kind == "stop":
                 self.stop(action.message)
                 return
+            if action.kind == "reread":
+                self.force_ocr=True
             if action.kind in {"click","scroll"}:
                 self.desktop.perform(action,(rect.x(),rect.y()),ratio,whole_window=whole_window)
             self.timer.start(max(action.delay,280 if action.kind in {"click","scroll"} else 100))

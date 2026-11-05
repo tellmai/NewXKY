@@ -20,7 +20,7 @@ def test_import_preserves_text_ids_rejects_precision_loss_and_duplicates(tmp_pat
     sheet = wb.create_sheet("人员")
     sheet.append(["姓名", "所在的区县", "身份证号"])
     sheet.append(["演示甲", "黔江区", "11010119900101001x"])
-    sheet.append(["重复", "黔江区", "11010119900101001X"])
+    sheet.append(["演示甲", "黔江区", "11010119900101001X"])
     sheet.append(["数值", "黔江区", 110101199001010010])
     sheet.append(["缺少区县", "", "110101199001010010"])
     sheet.append([None, None, None])

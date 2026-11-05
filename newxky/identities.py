@@ -1,6 +1,6 @@
 """Personnel import and the explicitly advanced, in-memory exam queue."""
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -19,12 +19,18 @@ class Candidate:
     def masked_id(self):
         return self.id_number[:3] + "*" * (len(self.id_number) - 7) + self.id_number[-4:]
 
+    @property
+    def key(self):
+        return self.district.strip(),self.name.strip(),self.id_number.strip().upper()
+
 
 @dataclass
 class IdentityImport:
     candidates: list[Candidate]
     issues: list[str]
     sheet: str
+    files: int = 1
+    duplicates: int = 0
 
 
 @dataclass(frozen=True)
@@ -82,17 +88,49 @@ def load_identities(path):
                     raw_id = raw_id.strip().upper()
                     if not re.fullmatch(r"(?:[0-9]{15}|[0-9]{17}[0-9X])", raw_id):
                         reason = "身份证号应为 15 位或 18 位，末位可为 X"
-                    elif raw_id in seen:
+                    elif (str(district).strip(),str(name).strip(),raw_id) in seen:
                         reason = "人员重复，已保留首次出现的记录"
                 if reason:
                     issues.append(f"第 {number} 行：{reason}")
                     continue
-                seen.add(raw_id)
+                seen.add((str(district).strip(),str(name).strip(),raw_id))
                 candidates.append(Candidate(number, str(district).strip(), str(name).strip(), raw_id))
-            return IdentityImport(candidates, issues, sheet.title)
+            return IdentityImport(candidates, issues, sheet.title,duplicates=sum("人员重复" in issue for issue in issues))
         raise ValueError("找不到包含「所在的区县、姓名、身份证号」三列表头的工作表")
     finally:
         wb.close()
+
+
+def load_identity_folder(path, excluded=()):
+    """Combine every workbook, retaining distinct district/name/ID triples."""
+    folder = Path(path).resolve()
+    if not folder.is_dir():
+        raise ValueError("人员信息文件夹不存在，请重新选择")
+    excluded = tuple(Path(root).resolve() for root in excluded)
+    files = sorted((file for file in folder.rglob("*.xlsx")
+                    if not file.name.startswith("~$") and file.is_file()
+                    and file.resolve().is_relative_to(folder)
+                    and not any(file.resolve().is_relative_to(root) for root in excluded)),
+                   key=lambda file:str(file.relative_to(folder)).casefold())
+    if not files:
+        raise ValueError("所选文件夹中没有可导入的 .xlsx 文件")
+    candidates,issues,seen,duplicates = [],[],set(),0
+    for file in files:
+        name = str(file.relative_to(folder))
+        try:
+            result = load_identities(file)
+        except Exception as error:
+            issues.append(f"{name}：读取失败（{type(error).__name__}），请检查表头和文件格式")
+            continue
+        issues.extend(f"{name}：{issue}" for issue in result.issues)
+        duplicates += sum("人员重复" in issue for issue in result.issues)
+        for candidate in result.candidates:
+            if candidate.key in seen:
+                duplicates += 1
+                continue
+            seen.add(candidate.key)
+            candidates.append(replace(candidate,row=len(candidates)+2))
+    return IdentityImport(candidates,issues,f"{len(files)} 个文件",len(files),duplicates)
 
 
 @dataclass
@@ -117,11 +155,11 @@ class ExamQueue:
         return self.records[self.position:]
 
     def add(self, candidates):
-        seen = {r.candidate.id_number for r in self.records}
+        seen = {r.candidate.key for r in self.records}
         for candidate in candidates:
-            if candidate.id_number not in seen:
+            if candidate.key not in seen:
                 self.records.append(CandidateRecord(candidate))
-                seen.add(candidate.id_number)
+                seen.add(candidate.key)
 
     def reorder(self, rows):
         pending = {r.candidate.row: r for r in self.pending}

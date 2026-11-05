@@ -278,7 +278,7 @@ class LocalOCR:
     def recognize(self, image: bytes) -> str:
         return self.recognize_layout(image).text
 
-    def recognize_layout(self, image: bytes, *, reuse_text=False) -> OCRLayout:
+    def recognize_layout(self, image: bytes, *, reuse_text=False, force=False) -> OCRLayout:
         """Retain original hit-test geometry; serialize inference across workers.
 
         Automation may reuse geometry after a colour-only selection change. Its
@@ -286,7 +286,10 @@ class LocalOCR:
         """
         self.warmup()
         with self._recognition_lock:
-            return self._recognize_layout(image, reuse_text)
+            if force:
+                self._layouts.clear()
+                self._last_signature = self._last_layout = None
+            return self._recognize_layout(image, reuse_text and not force)
 
     def _recognize_layout(self, image, reuse_text):
         key = hashlib.blake2b(image, digest_size=16).digest()

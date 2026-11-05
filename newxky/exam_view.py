@@ -184,14 +184,18 @@ def parse_exam(layout, pixels, previous=None) -> ExamView:
         labels.append(found[0] if len(found)==1 else None)
     anchors = [ord(line.text.strip()[0])-i for i,line in enumerate(labels) if line is not None]
     base = anchors[0] if len(anchors)>=2 and len(set(anchors))==1 and 65<=anchors[0] and anchors[0]+len(chips)<=73 else None
+    chip_cards = []
+    for x,y,cw,ch in chips:
+        center = (x+cw/2,y+ch/2)
+        cards = [r for r in rectangles if r.contains(center)
+                 and sum(r.contains((a+c/2,b+d/2)) for a,b,c,d in chips) == 1]
+        chip_cards.append(min(cards,key=lambda r:(r.right-r.left)*(r.bottom-r.top)) if cards else None)
     entries = []
     for index,chip in enumerate(chips):
         x,y,cw,ch = chip
         center = (x+cw/2,y+ch/2)
         label_line = labels[index]
-        cards = [r for r in rectangles if r.contains(center)
-                 and sum(r.contains((a+c/2,b+d/2)) for a,b,c,d in chips) == 1]
-        card = min(cards, key=lambda r:(r.right-r.left)*(r.bottom-r.top)) if cards else None
+        card = chip_cards[index]
         letter = label_line.text.strip()[0] if label_line else None
         if letter is None and previous is not None and card is not None:
             body = [line for line in lines if _rect(line).left>=x+cw-2 and card.contains(_rect(line).center)]
@@ -230,13 +234,37 @@ def parse_exam(layout, pixels, previous=None) -> ExamView:
                                      selected_state(pixels,chip,card),not clipped,confidence,starts,ends))
     if len({o.letter for o in options}) != len(options):
         options = []
-    first_top = min((e[2].top if e[2] else e[0][1]-e[0][3] for e in entries), default=footer)
+    # An unreadable selected A badge must not move the stem boundary down to B.
+    first_top = min((card.top if card else chip[1]-chip[3]
+                     for chip,card in zip(chips,chip_cards)),default=footer)
     stem_lines = [line for line in lines if _rect(line).bottom <= first_top and _rect(line).bottom < footer]
+    stem_cards = [r for r in rectangles if r.bottom <= first_top+1
+                  and any(r.contains(_rect(line).center) for line in stem_lines)]
+    stem_card = min(stem_cards,key=lambda r:(r.right-r.left)*(r.bottom-r.top)) if stem_cards else None
+    if stem_card:
+        headers = [line for line in stem_lines if _rect(line).bottom <= stem_card.top+2]
+        stem_lines = [line for line in stem_lines if stem_card.contains(_rect(line).center)]
+    else:
+        prose_top = min((_rect(line).top for line in stem_lines
+                         if _rect(line).right-_rect(line).left > w*.2),default=first_top)
+        headers = [line for line in stem_lines if _rect(line).bottom <= prose_top]
+    numbers = []
+    for line in headers:
+        text = line.text.strip()
+        tag = re.fullmatch(r"(?:单选|多选|判断)题(?:[·•.]可多选)?\s*(\d{1,4})",text)
+        bare = re.fullmatch(r"\d{1,4}",text)
+        if tag or bare and _rect(line).right >= w*.8:
+            number = int(tag[1] if tag else text)
+            if 0 < number <= 1000:
+                numbers.append(number)
+                if line in stem_lines:
+                    stem_lines.remove(line)
+    card_number = numbers[0] if numbers and len(set(numbers)) == 1 else None
     stem = clean_stem(text_from_rows(_rows(stem_lines)))
     progress = re.search(r"第\s*(\d+)\s*题\s*/\s*共\s*(\d+)\s*题", layout.text)
     answered = re.search(r"已答\s*(\d+)\s*/\s*(\d+)",layout.text)
     return ExamView(stem,tuple(options),controls,w,h,footer,layout.text,
-                    int(progress[1]) if progress else None, int(progress[2]) if progress else None,
+                    int(progress[1]) if progress else card_number, int(progress[2]) if progress else None,
                     int(answered[1]) if answered else None)
 
 
