@@ -6,12 +6,12 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRect, Qt, QThreadPool, QTimer
-from PySide6.QtGui import QFont, QGuiApplication
+from PySide6.QtGui import QFont, QGuiApplication, QIcon, QImage
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QMainWindow, QMessageBox, QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QSplitter, QTabWidget, QTableWidget,
-    QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QHeaderView,
+    QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QHeaderView, QListView,
 )
 
 from .bank import load_pdf, merge_banks, read_bank, save_bank
@@ -21,6 +21,8 @@ from .models import Bank
 from .monitor import FrameTracker
 from .ocr import LocalOCR
 from .region import RegionBorder, RegionSelector
+from .search import SearchWindow
+from .text_format import emphasize_bank_order
 from .workers import Worker
 
 
@@ -41,16 +43,27 @@ QPushButton:disabled { color: #a3afbb; background: #f2f4f7; }
 QPushButton#primary { background: #087f70; color: white; border: 1px solid #087f70; }
 QPushButton#primary:hover { background: #066c5f; }
 QPushButton#primary:disabled { background: #b1c9c4; border-color: #b1c9c4; }
-QTextEdit, QTableWidget { background: white; border: 1px solid #e0e7ef; border-radius: 8px; padding: 8px; selection-background-color: #d7ede7; }
+QTextEdit, QTableWidget, QLineEdit { background: white; border: 1px solid #e0e7ef; border-radius: 8px; padding: 8px; selection-background-color: #d7ede7; }
+QTableWidget::item:selected { background: #d7ede7; color: #182c43; }
 QTabWidget::pane { border: 0; }
 QTabBar::tab { padding: 10px 14px; color: #6b7e90; }
 QTabBar::tab:selected { color: #087f70; border-bottom: 2px solid #087f70; }
 QProgressBar { border: 0; background: #e4ebeF; border-radius: 4px; height: 8px; }
 QProgressBar::chunk { background: #12ad90; border-radius: 4px; }
 QComboBox { border: 1px solid #d8e1ea; padding: 6px; border-radius: 6px; background: white; }
+QComboBox#captureInterval { background: #f7fcfa; color: #126658; border: 1px solid #bfdbd2; border-radius: 8px; padding: 8px 28px 8px 10px; font-weight: 600; }
+QComboBox#captureInterval:hover { background: #edf8f3; border-color: #69b8a5; }
+QComboBox#captureInterval:focus, QComboBox#captureInterval:on { background: white; border-color: #0b8c77; }
+QComboBox#captureInterval::drop-down { width: 26px; border: 0; subcontrol-origin: padding; subcontrol-position: top right; }
+QComboBox#captureInterval::down-arrow { image: url('__CAPTURE_CHEVRON__'); width: 14px; height: 14px; }
+QComboBox#captureInterval QAbstractItemView { background: white; color: #182c43; border: 1px solid #bfdbd2; border-radius: 8px; padding: 4px; outline: 0; selection-background-color: #dcefe7; selection-color: #075e50; }
+QComboBox#captureInterval QAbstractItemView::item { min-height: 28px; padding: 5px 8px; border-radius: 5px; }
+QComboBox#captureInterval QAbstractItemView::item:selected { background: #dcefe7; color: #075e50; }
 QHeaderView::section { background: #f4f7fa; border: 0; padding: 8px; }
 QSplitter::handle { background: transparent; height: 10px; }
 """
+ASSETS = Path(__file__).resolve().parents[1] / "assets"
+STYLE = STYLE.replace("__CAPTURE_CHEVRON__", (ASSETS / "chevron-down.svg").as_posix())
 
 
 def label(text, name="", wrap=False):
@@ -87,6 +100,9 @@ class MainWindow(QMainWindow):
         self._closing = False
         self._last_issue = ""
         self._last_capture = None
+        self.search_window = None
+        self._ocr_warming = False
+        self._ocr_ready = False
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.border = RegionBorder()
@@ -94,7 +110,7 @@ class MainWindow(QMainWindow):
         self.floating.expand.connect(self.expand_main)
         self.floating.toggle.connect(self.toggle_monitor)
         self.timer = QTimer(self)
-        self.timer.setInterval(250)
+        self.timer.setInterval(100)
         self.timer.timeout.connect(self.capture)
         self.setWindowTitle("NewXKY · 区域答题助手")
         self.resize(1120, 850)
@@ -145,6 +161,14 @@ class MainWindow(QMainWindow):
         speed_row = QHBoxLayout()
         speed_row.addWidget(label("画面检测"))
         self.interval = QComboBox()
+        self.interval.setObjectName("captureInterval")
+        self.interval.setMinimumWidth(146)
+        self.interval.setMaxVisibleItems(4)
+        interval_view = QListView(self.interval)
+        interval_view.setSpacing(3)
+        interval_view.setMinimumWidth(162)
+        self.interval.setView(interval_view)
+        self.interval.addItem("100 毫秒（快）", 100)
         self.interval.addItem("250 毫秒", 250)
         self.interval.addItem("500 毫秒", 500)
         self.interval.addItem("1000 毫秒", 1000)
@@ -194,22 +218,30 @@ class MainWindow(QMainWindow):
         float_button = QPushButton("悬浮答案")
         float_button.clicked.connect(self.show_floating)
         actions.addWidget(float_button)
+        self.search_button = QPushButton("关键词查答案")
+        self.search_button.setShortcut("Ctrl+F")
+        self.search_button.setToolTip("搜索题干或选项关键词（Ctrl+F）")
+        self.search_button.clicked.connect(self.show_search)
+        actions.addWidget(self.search_button)
         actions.addStretch()
-        self.timing = label("画面变化后自动更新", "muted")
+        self.timing = label("题目文字变化后自动更新", "muted")
         self.timing.setWordWrap(True)
         main.addLayout(actions)
         main.addWidget(self.timing)
         answer_card, answer_layout = card()
         self.answer_title = label("当前题目 / 答案", "eyebrow")
+        self.answer_title.setTextFormat(Qt.RichText)
         answer_layout.addWidget(self.answer_title)
         self.answer = label("—", "answer")
         answer_layout.addWidget(self.answer)
         self.message = label("导入题库并选择区域后，点击“开始识别”。", "muted", True)
+        self.message.setTextFormat(Qt.RichText)
         answer_layout.addWidget(self.message)
         self.answer_detail = label("", wrap=True)
         self.answer_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
         answer_layout.addWidget(self.answer_detail)
         self.provenance = label("", "muted", True)
+        self.provenance.setTextFormat(Qt.RichText)
         answer_layout.addWidget(self.provenance)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -290,7 +322,21 @@ class MainWindow(QMainWindow):
             issues = sum(name in issue for issue in self.bank.issues)
             for column, value in enumerate((name, f"至少 {max(pages, default=0)}", str(len(questions)), str(issues))):
                 self.bank_table.setItem(row, column, QTableWidgetItem(value))
+        if self.search_window is not None:
+            self.search_window.set_index(self.index)
         self.refresh_controls()
+        if self.bank.questions and not self._ocr_ready and not self._ocr_warming and not self._closing:
+            self._ocr_warming = True
+            self.launch(lambda _: self.ocr.warmup(), self.ocr_prepared, self.ocr_prepare_failed)
+
+    def ocr_prepared(self, _):
+        self._ocr_warming = False
+        self._ocr_ready = True
+        self.log("本地 OCR 已预加载，开始识别时无需再次加载模型。")
+
+    def ocr_prepare_failed(self, message):
+        self._ocr_warming = False
+        self.log(f"OCR 预加载未完成，开始识别时将重试：{message}")
 
     def refresh_controls(self):
         ready = not self.importing and not self.loading and not self._closing
@@ -299,9 +345,18 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(ready and bool(self.bank.questions) and self.region is not None)
         self.retry_button.setEnabled(ready and self.running)
         self.select_button.setEnabled(ready)
+        self.search_button.setEnabled(not self._closing)
         self.start_button.setText("暂停识别" if self.running else "开始识别")
         self.floating.toggle_button.setText(self.start_button.text())
         self.floating.toggle_button.setEnabled(self.start_button.isEnabled())
+
+    def show_search(self):
+        if self.search_window is None:
+            self.search_window = SearchWindow(self.index, self)
+        self.search_window.show()
+        self.search_window.raise_()
+        self.search_window.activateWindow()
+        self.search_window.query.setFocus()
 
     def show_floating(self):
         screen = QGuiApplication.screenAt(self.region.center()) if self.region is not None else self.screen()
@@ -320,6 +375,7 @@ class MainWindow(QMainWindow):
 
     def sync_floating(self):
         self.floating.answer.setText(self.answer.text())
+        self.floating.answer.setStyleSheet(self.answer.styleSheet())
         self.floating.message.setText(self.message.text())
         self.floating.detail.setText(self.answer_detail.text())
 
@@ -454,9 +510,10 @@ class MainWindow(QMainWindow):
     def clear_answer(self, message):
         self.answer_title.setText("当前题目 / 答案")
         self.answer.setText("—")
+        self.answer.setStyleSheet("")
         self.answer_detail.clear()
         self.provenance.clear()
-        self.message.setText(message)
+        self.message.setText(emphasize_bank_order(message))
         self.question_text.clear()
         self.sync_floating()
 
@@ -486,6 +543,9 @@ class MainWindow(QMainWindow):
             issue = "答案窗口遮挡识别区域，请把本窗口移到区域外"
         elif self.floating.isVisible() and self.floating.frameGeometry().intersects(self.region):
             issue = "悬浮答案遮挡识别区域，请将悬浮窗移到区域外"
+        elif (self.search_window is not None and self.search_window.isVisible()
+              and not self.search_window.isMinimized() and self.search_window.frameGeometry().intersects(self.region)):
+            issue = "搜索窗口遮挡识别区域，请将搜索窗口移到区域外"
         if issue:
             if issue != self._last_issue:
                 self.tracker.invalidate()
@@ -503,9 +563,12 @@ class MainWindow(QMainWindow):
             self.stop_monitor("截屏失败，请重新选择可见区域")
             return
         image = pixmap.toImage()
+        from numpy import frombuffer, uint8
+        gray = image.convertToFormat(QImage.Format_Grayscale8)
+        pixels = frombuffer(gray.constBits(), dtype=uint8).reshape(gray.height(), gray.bytesPerLine())[:, :gray.width()]
         now = time.monotonic()
-        if self.tracker.observe(bytes(image.constBits()), now):
-            self.clear_answer("画面已变化，正在识别新题目…")
+        if self.tracker.observe_image(pixels, now):
+            self.clear_answer("题目文字已变化，正在识别新题目…")
             self.ocr_text.clear()
             self.status.setText("等待画面稳定")
             self._last_capture = image
@@ -539,11 +602,31 @@ class MainWindow(QMainWindow):
             self.answer_detail.setText("\n".join(f"{letter}. {match.options[letter]}" for letter in match.answers))
             q = match.question
             scope = "答案字母已按当前画面选项顺序对应。" if match.status == "matched" else "题库顺序：网页可能调整选项顺序，请按选项内容核对。"
-            self.answer_title.setText("当前题目 / 网页答案" if match.status == "matched" else "当前题目 / 题库答案（题库顺序）")
-            self.provenance.setText(f"{q.kind} · {q.source} · 第 {q.number} 题 · PDF 第 {', '.join(map(str, q.pages))} 页\n{scope}")
+            self.answer_title.setText(emphasize_bank_order("当前题目 / 网页答案" if match.status == "matched" else "当前题目 / 题库答案（题库顺序）"))
+            self.provenance.setText(emphasize_bank_order(f"{q.kind} · {q.source} · 第 {q.number} 题 · PDF 第 {', '.join(map(str, q.pages))} 页\n{scope}"))
+        elif match.status in ("candidate", "unverified") and match.question:
+            q = match.question
+            reference = match.reference
+            answers = reference.answers if reference else q.answers
+            options = reference.options if reference else q.options
+            screen_order = reference is not None and reference.screen_order
+            title = "相似题参考" if match.status == "candidate" else "选项待核对"
+            scope = "参考网页顺序" if screen_order else "题库顺序"
+            self.answer_title.setText(emphasize_bank_order(f"{title} / {scope}", warning=True))
+            self.answer.setText("参考 " + " / ".join(answers))
+            self.answer.setStyleSheet("color:#c62828;font-size:36px;")
+            self.message.setText(emphasize_bank_order(match.message, warning=True))
+            correct = "\n".join(f"{letter}. {options[letter]}" for letter in answers)
+            stem_title = "相似题题干" if match.status == "candidate" else "题库原题"
+            self.answer_detail.setText(f"{stem_title}：{q.stem}\n\n参考答案：\n{correct}")
+            caution = ("选项文字尚未完全核对，请按完整内容确认。" if match.status == "unverified"
+                       else f"文字相似度 {match.score:.0%} · 请核对题干差异。")
+            self.provenance.setText(emphasize_bank_order(
+                f"{q.kind} · {q.source} · 第 {q.number} 题 · PDF 第 {', '.join(map(str, q.pages))} 页\n"
+                f"{scope} · 仅供参考 · {caution}", warning=True))
         if match.question:
             q = match.question
-            # Unconfirmed candidates do not display the bank's answer letters.
+            # Keep the source question available to compare with the current OCR.
             self.question_text.setPlainText(f"{q.source} · 第 {q.number} 题 · PDF 页 {', '.join(map(str, q.pages))}\n\n{q.stem}\n\n" + "\n".join(f"{k}. {v}" for k, v in q.options.items()))
         self.sync_floating()
 
@@ -551,7 +634,7 @@ class MainWindow(QMainWindow):
         if not self.tracker.finish(revision) or not self.running:
             return
         self.stop_monitor("识别失败，可重试")
-        self.message.setText(message)
+        self.message.setText(emphasize_bank_order(message))
         self.sync_floating()
         self.log(message)
 
@@ -585,6 +668,8 @@ class MainWindow(QMainWindow):
         self._closing = True
         self.border.close()
         self.floating.close()
+        if self.search_window is not None:
+            self.search_window.close()
         self._save_settings()
         if self._jobs:
             self.setEnabled(False)
@@ -598,6 +683,7 @@ def run(data_dir=None, *, hide_console=False):
     app = QApplication(sys.argv)
     app.setApplicationName("NewXKY")
     app.setOrganizationName("NewXKY")
+    app.setWindowIcon(QIcon(str(ASSETS / "NewXKY.ico")))
     app.setFont(QFont("Microsoft YaHei UI", 10))
     app.setStyleSheet(STYLE)
     root = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]

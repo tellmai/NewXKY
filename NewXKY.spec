@@ -6,6 +6,7 @@ from importlib.metadata import distributions
 root = Path(SPECPATH)
 datas = collect_data_files('rapidocr_onnxruntime')
 datas += [(str(root / 'README.md'), '.'), (str(root / 'THIRD_PARTY_NOTICES.md'), '.')]
+datas += [(str(root / 'assets' / name), 'assets') for name in ('NewXKY.ico', 'chevron-down.svg')]
 for distribution in distributions():
     for entry in distribution.files or []:
         parts = tuple(str(part).lower() for part in entry.parts)
@@ -21,5 +22,6 @@ a = Analysis([str(root / 'main.py')], pathex=[str(root)],
 # Prevent unrelated PATH tools from contributing incompatible versioned ICU DLLs.
 a.binaries = [entry for entry in a.binaries if Path(entry[0]).name.lower() not in {'icuuc.dll', 'icuin.dll', 'icudt78.dll'}]
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='NewXKY', console=False, upx=False)
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='NewXKY', console=False, upx=False,
+          icon=str(root / 'assets' / 'NewXKY.ico'))
 coll = COLLECT(exe, a.binaries, a.datas, name='NewXKY', upx=False)

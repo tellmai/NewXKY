@@ -66,12 +66,19 @@ def test_changed_negation_never_yields_answer(alter):
     assert result.status != "matched" and not result.answers
 
 
-def test_incomplete_options_show_explicit_bank_reference():
+def test_incomplete_options_use_the_visible_correct_answer_letter():
     q = question()
     text = screen(q)
     result = KnowledgeIndex([q]).lookup(text[:text.rfind("\nD.")])
-    assert result.status == "reference"
-    assert result.answers == ("B",) and result.options == q.options
+    assert result.status == "matched" and result.answers == ("B",)
+    assert result.options["B"] == q.options["B"]
+
+
+def test_incomplete_options_keep_bank_reference_when_correct_content_is_missing():
+    q = question(answer=("D",))
+    text = screen(q)
+    result = KnowledgeIndex([q]).lookup(text[:text.rfind("\nD.")])
+    assert result.status == "reference" and result.answers == ("D",)
 
 
 def test_complete_changed_options_do_not_fall_back_to_bank_letters():
@@ -126,6 +133,23 @@ def test_two_visible_questions_are_ambiguous():
     assert result.status == "ambiguous" and not result.answers
 
 
+def test_generic_stem_nested_inside_full_stem_is_one_question():
+    q = question("根据本条例，以下说法正确的是（）")
+    generic = question("以下说法正确的是（）", answer=("A",))
+    index = KnowledgeIndex([q, generic])
+    result = index.lookup(screen(q))
+    assert result.status == "matched" and result.answers == ("B",)
+    second_question = index.lookup(screen(q) + "\n" + screen(generic))
+    assert second_question.status == "ambiguous" and not second_question.answers
+
+
+@pytest.mark.parametrize("tag", ["多造明·可多造 95", "多造圆·可多造 95", "多选题·可多选 95"])
+def test_small_decorative_type_badge_is_not_added_to_stem(tag):
+    q = question()
+    result = KnowledgeIndex([q]).lookup(tag + "\n" + screen(q).split("\n", 1)[1])
+    assert result.status == "matched" and result.answers == ("B",)
+
+
 def test_inflight_old_frame_cannot_replace_new_frame():
     tracker = FrameTracker()
     assert tracker.observe(b"first question", 0)
@@ -147,6 +171,18 @@ def test_pause_or_reselect_discards_pending_ocr():
     tracker.invalidate()
     assert not tracker.finish(revision)
     assert not tracker.busy
+
+
+def test_fast_polling_still_waits_for_a_stable_current_frame():
+    tracker = FrameTracker()
+    tracker.observe(b"first", 0)
+    assert not tracker.ready(.1)
+    assert tracker.ready(.2)
+    revision = tracker.begin()
+    tracker.observe(b"changed", .21)
+    assert not tracker.finish(revision)
+    assert not tracker.ready(.3)
+    assert tracker.ready(.41)
 
 
 def test_ocr_line_order_keeps_repeated_words():

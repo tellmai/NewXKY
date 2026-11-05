@@ -20,7 +20,7 @@ class FloatingAnswer(QWidget):
         layout.addWidget(self.answer)
         self.message = QLabel("")
         self.message.setWordWrap(True)
-        self.message.setTextFormat(Qt.PlainText)
+        self.message.setTextFormat(Qt.RichText)
         layout.addWidget(self.message)
         self.detail = QLabel("")
         self.detail.setWordWrap(True)

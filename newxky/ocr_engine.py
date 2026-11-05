@@ -1,9 +1,11 @@
 """Adapt the legacy and current RapidOCR APIs to a shared local model pipeline."""
 from pathlib import Path
+import os
 
 
 class OCREngine:
     def __init__(self):
+        threads = max(1, min(4, (os.cpu_count() or 2) // 2))
         try:
             from rapidocr_onnxruntime import RapidOCR
         except ModuleNotFoundError as error:
@@ -16,7 +18,7 @@ class OCREngine:
             if any(not (models / name).is_file() for name in required.values()):
                 raise RuntimeError("便携包 OCR 模型不完整，请重新解压整个安装包")
             params = {"Global.text_score": 0.0, "Global.use_cls": False,
-                      "EngineConfig.onnxruntime.intra_op_num_threads": 1,
+                      "EngineConfig.onnxruntime.intra_op_num_threads": threads,
                       "EngineConfig.onnxruntime.inter_op_num_threads": 1}
             for key, name in required.items():
                 params[f"{key}.model_path"] = str(models / name)
@@ -25,7 +27,8 @@ class OCREngine:
             self.engine = RapidOCR(params=params)
             self.modern = True
         else:
-            self.engine = RapidOCR(intra_op_num_threads=1, inter_op_num_threads=1)
+            # Long and short lines padded together waste CPU on wide tensors.
+            self.engine = RapidOCR(intra_op_num_threads=threads, inter_op_num_threads=1, rec_batch_num=1)
             self.modern = False
 
     def __call__(self, image, *, use_det=True):
