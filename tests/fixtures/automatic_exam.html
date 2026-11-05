@@ -1,0 +1,44 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>NewXKY 本地自动答题验证</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f6f7;color:#222;font:22px 'Microsoft YaHei',sans-serif}
+header{height:110px;padding:20px 35px;background:white}h1{font-size:22px;margin:0 0 10px}.progress{font-size:16px;color:#666}
+main{position:fixed;left:22px;right:22px;top:125px;bottom:90px;overflow-y:auto;background:white;border-radius:18px;padding:16px;overscroll-behavior:contain}
+.stem{border:1px solid #e7e5e3;background:#fdfcfb;border-radius:16px;padding:35px 100px;font-size:30px;line-height:1.8;margin-bottom:14px}
+.option{position:relative;margin:12px 0;border:1px solid #ddd;border-radius:16px;display:flex;align-items:center;min-height:104px;cursor:pointer;padding:12px 18px;gap:20px;user-select:none}
+.badge{display:flex;align-items:center;justify-content:center;font-size:16px;border:1px solid #ccc;width:38px;height:38px;flex-shrink:0;border-radius:50%;color:#617083}
+.multi .badge{border-radius:7px}.body{font-size:30px;line-height:1.8;padding:12px 20px;background:#fcfcfb;border-radius:12px;flex:1}
+.selected .badge{background:#941d27;border-color:#941d27;color:white}.selected{border-color:#ae6770;background:#fff7f7}
+footer{position:fixed;bottom:0;left:0;right:0;height:80px;display:flex;align-items:center;justify-content:flex-end;padding:10px 22px;gap:12px;background:#f5f6f7}
+button{font:700 22px 'Microsoft YaHei',sans-serif;border:1px solid #ddd;border-radius:13px;padding:12px 32px;background:white;color:#5d6973;cursor:pointer}
+button:disabled{color:#b8b8b8;background:#fafafa;cursor:default}.next{background:#941d27;color:white}.submit{background:#a76b21;color:white}
+dialog{border:1px solid #ddd;border-radius:18px;padding:32px;max-width:650px;text-align:center}dialog::backdrop{background:#0005}dialog p{margin:0 0 24px}
+#success{font-size:34px;color:#087f70;text-align:center;padding:120px 0}
+</style>
+<header><h1>NewXKY 本地自动答题验证</h1><div class="progress" id="progress"></div></header>
+<main id="exam"></main><footer id="footer"></footer><dialog id="dialog"><p id="dialogText"></p><button id="ok">确定</button></dialog>
+<script>
+const bank=[
+{kind:'判断',stem:'以未成年人为服务对象的在线教育网络产品和服务提供者，应提供统一的、标准化的产品和服务。（）',options:{A:'正确',B:'错误'},answers:['B']},
+{kind:'多选',stem:'国家安全风险评估机制的主要作用是什么（）。',options:{A:'管理外部投资',B:'监督国家安全法律实施',C:'定期开展安全风险调查',D:'向中央提交评估报告'},answers:['C','D']},
+{kind:'判断',stem:'关键信息基础设施的运营者因业务需要，确需向境外提供在中华人民共和国境内运营中收集和产生的个人信息和重要数据的，只需向国家网信部门备案即可，无须进行安全评估。（）',options:{A:'错误',B:'正确'},answers:['A']}
+];
+const params=new URLSearchParams(location.search);let current=Number(params.get('start')||'1');
+const selections=[new Set(['A']),new Set(['A','C']),new Set()];let events=[];let submitted=false;
+if(params.has('missing'))bank[1].stem='这是一道题库中没有的全新测试题目，请选择完整答案。（）';
+if(params.has('partial'))bank[1].stem='国家安全风险评估机制的主要作用';
+function event(type,detail){events.push({type,current,detail});window.localStorage.setItem('newxky-local-test',JSON.stringify({submitted,events,selections:selections.map(x=>[...x])}));}
+function showDialog(text,callback,label='确定'){document.querySelector('#dialogText').textContent=text;document.querySelector('#ok').textContent=label;document.querySelector('#ok').onclick=()=>{document.querySelector('#dialog').close();callback?.()};document.querySelector('#dialog').showModal();}
+function render(){
+ const q=bank[current];document.querySelector('#progress').textContent=`第 ${current+1} 题 / 共 ${bank.length} 题　已答 ${selections.filter(x=>x.size).length} / ${bank.length} 题`;
+ const content=document.querySelector('#exam');content.innerHTML='';content.scrollTop=0;
+ const stem=document.createElement('div');stem.className='stem';stem.textContent=q.stem;content.append(stem);
+ for(const [letter,text]of Object.entries(q.options)){const row=document.createElement('div');row.className='option '+(q.kind==='多选'?'multi ':'')+(selections[current].has(letter)?'selected':'');row.innerHTML='<span class="badge">'+letter+'</span><span class="body"></span>';row.querySelector('.body').textContent=text;
+  if(params.has('long')&&current===1)row.querySelector('.body').style.minHeight='180px';
+  row.onclick=()=>{if(q.kind==='多选'){selections[current].has(letter)?selections[current].delete(letter):selections[current].add(letter)}else{selections[current]=new Set([letter])}event('answer',letter);const top=content.scrollTop;render();content.scrollTop=top};content.append(row)}
+ const foot=document.querySelector('#footer');foot.innerHTML='';
+ const previous=document.createElement('button');previous.textContent='上一题';previous.disabled=current===0;previous.onclick=()=>{current--;event('previous');render()};foot.append(previous);
+ const next=document.createElement('button');next.className='next';next.textContent=current===bank.length-1?'完成检查':'下一题';next.onclick=()=>{if(current===bank.length-1){event('check');showDialog(selections.every(x=>x.size)?'全部题目已完成，检查完成。':'还有题目未完成，请检查。')}else{current++;event('next');render()}};foot.append(next);
+ const submit=document.createElement('button');submit.className='submit';submit.textContent='提交答卷';submit.onclick=()=>{event('submit');if(!selections.every(x=>x.size)){showDialog('还有题目未完成，请检查。');return}showDialog('确定提交答卷吗？',()=>{submitted=true;event('submitted');document.querySelector('#exam').innerHTML='<div id="success">答卷提交成功</div>';foot.innerHTML='';document.querySelector('#progress').textContent='本地测试结束'},'确认提交')};foot.append(submit);
+}
+event('start');render();window.getTestResult=()=>({submitted,events,selections:selections.map(x=>[...x]),expected:bank.map(x=>x.answers)});
+</script></html>

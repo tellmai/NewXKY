@@ -8,6 +8,9 @@ from pathlib import Path
 
 
 def main():
+    from newxky.lifetime import startup_allowed
+    if not startup_allowed():
+        return
     root = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--data-dir", type=Path, default=root / "data")

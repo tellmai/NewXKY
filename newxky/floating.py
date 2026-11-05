@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QLabel, QPushButton, QScrollArea, QVBoxLayout, QWi
 class FloatingAnswer(QWidget):
     expand = Signal()
     toggle = Signal()
+    auto_toggle = Signal()
 
     def __init__(self):
         super().__init__()
@@ -33,6 +34,9 @@ class FloatingAnswer(QWidget):
         self.toggle_button = QPushButton("开始识别")
         self.toggle_button.clicked.connect(self.toggle.emit)
         layout.addWidget(self.toggle_button)
+        self.auto_button = QPushButton("启动自动答题")
+        self.auto_button.clicked.connect(self.auto_toggle.emit)
+        layout.addWidget(self.auto_button)
         expand_button = QPushButton("展开主界面")
         expand_button.clicked.connect(self.expand.emit)
         layout.addWidget(expand_button)

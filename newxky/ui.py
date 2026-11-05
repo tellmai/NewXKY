@@ -5,13 +5,14 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRect, Qt, QThreadPool, QTimer
-from PySide6.QtGui import QFont, QGuiApplication, QIcon, QImage
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QRect, Qt, QThreadPool, QTimer, QUrl
+from PySide6.QtGui import QFont, QGuiApplication, QIcon, QImage, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout,
     QHBoxLayout, QLabel, QMainWindow, QMessageBox, QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QSplitter, QTabWidget, QTableWidget,
-    QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QHeaderView, QListView,
+    QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QHeaderView, QListView, QDialog, QLineEdit,
+    QListWidget, QListWidgetItem, QAbstractItemView,
 )
 
 from .bank import load_pdf, merge_banks, read_bank, save_bank
@@ -24,6 +25,11 @@ from .region import RegionBorder, RegionSelector
 from .search import SearchWindow
 from .text_format import emphasize_bank_order
 from .workers import Worker
+from .auto_controller import AutoController
+from .browser_bridge import BrowserBridge
+from .browsers import browser_path_key, discover_browsers
+from .identities import ExamQueue, SiteConfig, load_identities
+from .personnel_controller import PersonnelWorker
 
 
 STYLE = """
@@ -43,7 +49,10 @@ QPushButton:disabled { color: #a3afbb; background: #f2f4f7; }
 QPushButton#primary { background: #087f70; color: white; border: 1px solid #087f70; }
 QPushButton#primary:hover { background: #066c5f; }
 QPushButton#primary:disabled { background: #b1c9c4; border-color: #b1c9c4; }
-QTextEdit, QTableWidget, QLineEdit { background: white; border: 1px solid #e0e7ef; border-radius: 8px; padding: 8px; selection-background-color: #d7ede7; }
+QTextEdit, QTableWidget, QLineEdit, QListWidget { background: white; border: 1px solid #e0e7ef; border-radius: 8px; padding: 8px; selection-background-color: #d7ede7; }
+QListWidget::item { padding: 7px 8px; border-radius: 5px; }
+QListWidget::item:selected { background: #d7ede7; color: #075e50; }
+QListWidget::item:hover { background: #edf8f3; }
 QTableWidget::item:selected { background: #d7ede7; color: #182c43; }
 QTabWidget::pane { border: 0; }
 QTabBar::tab { padding: 10px 14px; color: #6b7e90; }
@@ -51,14 +60,16 @@ QTabBar::tab:selected { color: #087f70; border-bottom: 2px solid #087f70; }
 QProgressBar { border: 0; background: #e4ebeF; border-radius: 4px; height: 8px; }
 QProgressBar::chunk { background: #12ad90; border-radius: 4px; }
 QComboBox { border: 1px solid #d8e1ea; padding: 6px; border-radius: 6px; background: white; }
-QComboBox#captureInterval { background: #f7fcfa; color: #126658; border: 1px solid #bfdbd2; border-radius: 8px; padding: 8px 28px 8px 10px; font-weight: 600; }
-QComboBox#captureInterval:hover { background: #edf8f3; border-color: #69b8a5; }
-QComboBox#captureInterval:focus, QComboBox#captureInterval:on { background: white; border-color: #0b8c77; }
-QComboBox#captureInterval::drop-down { width: 26px; border: 0; subcontrol-origin: padding; subcontrol-position: top right; }
-QComboBox#captureInterval::down-arrow { image: url('__CAPTURE_CHEVRON__'); width: 14px; height: 14px; }
-QComboBox#captureInterval QAbstractItemView { background: white; color: #182c43; border: 1px solid #bfdbd2; border-radius: 8px; padding: 4px; outline: 0; selection-background-color: #dcefe7; selection-color: #075e50; }
-QComboBox#captureInterval QAbstractItemView::item { min-height: 28px; padding: 5px 8px; border-radius: 5px; }
-QComboBox#captureInterval QAbstractItemView::item:selected { background: #dcefe7; color: #075e50; }
+QComboBox#captureInterval, QComboBox#autoMode, QComboBox#browserChoice { background: #f7fcfa; color: #126658; border: 1px solid #bfdbd2; border-radius: 8px; padding: 9px 34px 9px 12px; font-weight: 600; }
+QComboBox#captureInterval:hover, QComboBox#autoMode:hover, QComboBox#browserChoice:hover { background: #edf8f3; border-color: #69b8a5; }
+QComboBox#captureInterval:focus, QComboBox#captureInterval:on, QComboBox#autoMode:focus, QComboBox#autoMode:on, QComboBox#browserChoice:focus, QComboBox#browserChoice:on { background: white; border-color: #0b8c77; }
+QComboBox#captureInterval::drop-down, QComboBox#autoMode::drop-down, QComboBox#browserChoice::drop-down { width: 30px; border: 0; subcontrol-origin: padding; subcontrol-position: top right; }
+QComboBox#captureInterval::down-arrow, QComboBox#autoMode::down-arrow, QComboBox#browserChoice::down-arrow { image: url('__CAPTURE_CHEVRON__'); width: 14px; height: 14px; }
+QComboBox#captureInterval QAbstractItemView, QComboBox#autoMode QAbstractItemView, QComboBox#browserChoice QAbstractItemView { background: white; color: #182c43; border: 1px solid #bfdbd2; border-radius: 8px; padding: 5px; outline: 0; selection-background-color: #dcefe7; selection-color: #075e50; }
+QComboBox#captureInterval QAbstractItemView::item, QComboBox#autoMode QAbstractItemView::item, QComboBox#browserChoice QAbstractItemView::item { min-height: 30px; padding: 6px 10px; border-radius: 5px; }
+QComboBox#captureInterval QAbstractItemView::item:selected, QComboBox#autoMode QAbstractItemView::item:selected, QComboBox#browserChoice QAbstractItemView::item:selected { background: #dcefe7; color: #075e50; }
+QComboBox:disabled { color: #96aaa4; background: #edf2f0; border-color: #dce6e1; }
+QComboBox QAbstractItemView::item:disabled { color: #9da9b4; }
 QHeaderView::section { background: #f4f7fa; border: 0; padding: 8px; }
 QSplitter::handle { background: transparent; height: 10px; }
 """
@@ -103,20 +114,35 @@ class MainWindow(QMainWindow):
         self.search_window = None
         self._ocr_warming = False
         self._ocr_ready = False
+        self.people = ExamQueue()
+        self.candidates = []
+        self.personnel_worker = None
+        self.personnel_importing = False
+        self._browser_handles = []
+        self._auto_person_position = None
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.border = RegionBorder()
         self.floating = FloatingAnswer()
         self.floating.expand.connect(self.expand_main)
         self.floating.toggle.connect(self.toggle_monitor)
+        self.floating.auto_toggle.connect(self.toggle_auto)
+        self.browser_bridge=BrowserBridge(self)
+        self.browser_bridge.changed.connect(self.browser_connection_changed)
+        self.auto = AutoController(self.ocr,self,bridge=self.browser_bridge)
+        self.auto.status.connect(self.auto_status)
+        self.auto.observation.connect(self.auto_observed)
+        self.auto.finished.connect(self.auto_finished)
+        self.auto.idle.connect(self._auto_idle)
         self.timer = QTimer(self)
         self.timer.setInterval(100)
         self.timer.timeout.connect(self.capture)
         self.setWindowTitle("NewXKY · 区域答题助手")
-        self.resize(1120, 850)
-        self.setMinimumSize(960, 730)
+        self.resize(1240, 940)
+        self.setMinimumSize(1060, 800)
         self._build_ui()
         self._read_settings()
+        self.refresh_controls()
         QTimer.singleShot(0, self.restore_bank)
 
     def _build_ui(self):
@@ -182,6 +208,22 @@ class MainWindow(QMainWindow):
         self.pin_check = QCheckBox("答案窗口置顶")
         self.pin_check.toggled.connect(self.pin_window)
         region_layout.addWidget(self.pin_check)
+        self.auto_button = QPushButton("启动自动答题")
+        self.auto_button.setObjectName("primary")
+        self.auto_button.clicked.connect(self.toggle_auto)
+        self.auto_mode=QComboBox()
+        self.auto_mode.setObjectName("autoMode")
+        self.auto_mode.setAccessibleName("自动答题方式")
+        self.auto_mode.setMinimumWidth(220)
+        self.auto_mode.setView(QListView(self.auto_mode))
+        self.auto_mode.view().setSpacing(3)
+        self.auto_mode.addItem("网页直连（不占鼠标）","dom")
+        self.auto_mode.addItem("屏幕区域（鼠标兼容）","screen")
+        self.auto_mode.currentIndexChanged.connect(self.refresh_controls)
+        self.browser_connect_button=QPushButton("连接浏览器…")
+        self.browser_connect_button.clicked.connect(self.connect_browser)
+        self.browser_status=label("网页直连需先连接答题标签页", "muted",True)
+        region_layout.addWidget(label("从当前题往后答；暂停后可继续。\n网页直连无需框选、不占鼠标。\nEsc 暂停；未完成题目不交卷。", "muted", True))
         sidebar.addWidget(region_card)
         sidebar.addStretch()
         sidebar.addWidget(label("先导入题库，再框选完整题目。\n浏览器需保持可见，答案窗口放在区域外。\n\n识别和匹配均在本机完成。", "muted", True))
@@ -207,6 +249,51 @@ class MainWindow(QMainWindow):
         self.status.setAlignment(Qt.AlignCenter)
         header.addWidget(self.status, 0, Qt.AlignTop)
         main.addLayout(header)
+        people_card, people_layout = card()
+        people_layout.setContentsMargins(18, 14, 18, 14)
+        people_header = QHBoxLayout()
+        people_header.addWidget(label("人员考试 / 逐人加载", "eyebrow"))
+        people_header.addStretch()
+        self.people_import_button = QPushButton("导入人员信息…")
+        self.people_import_button.clicked.connect(self.import_people)
+        people_header.addWidget(self.people_import_button)
+        people_layout.addLayout(people_header)
+        browser_row = QHBoxLayout()
+        browser_row.addWidget(label("考试浏览器"))
+        self.browser_combo = QComboBox()
+        self.browser_combo.setObjectName("browserChoice")
+        self.browser_combo.setAccessibleName("选择考试浏览器")
+        self.browser_combo.setMinimumWidth(220)
+        self.browser_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.browser_combo.setView(QListView(self.browser_combo))
+        self.browser_combo.view().setSpacing(3)
+        self.browser_combo.setToolTip("下次加载人员时使用此浏览器；此前打开的考试窗口会保留")
+        self.browser_refresh = QPushButton("刷新列表")
+        self.browser_refresh.clicked.connect(self.refresh_browsers)
+        self.browser_browse = QPushButton("浏览…")
+        self.browser_browse.clicked.connect(self.browse_browser)
+        browser_row.addWidget(self.browser_combo, 1)
+        browser_row.addWidget(self.browser_refresh)
+        browser_row.addWidget(self.browser_browse)
+        people_layout.addLayout(browser_row)
+        person_row = QHBoxLayout()
+        self.person_info = label("尚未导入人员信息", "muted", True)
+        person_row.addWidget(self.person_info, 1)
+        self.person_button = QPushButton("加载人员信息")
+        self.person_button.setObjectName("primary")
+        self.person_button.clicked.connect(self.load_person)
+        person_row.addWidget(self.person_button)
+        self.person_cancel = QPushButton("停止加载")
+        self.person_cancel.clicked.connect(self.cancel_person_loading)
+        self.person_cancel.hide()
+        person_row.addWidget(self.person_cancel)
+        self.person_skip = QPushButton("跳过当前人员")
+        self.person_skip.clicked.connect(self.skip_person)
+        person_row.addWidget(self.person_skip)
+        people_layout.addLayout(person_row)
+        self.person_hint = label("导入备选人员 → 搜索并添加待考 → 按队列逐人加载 → 人工验证 → 框选并启动自动答题", "muted", True)
+        people_layout.addWidget(self.person_hint)
+        main.addWidget(people_card)
         actions = QHBoxLayout()
         self.start_button = QPushButton("开始识别")
         self.start_button.setObjectName("primary")
@@ -228,6 +315,15 @@ class MainWindow(QMainWindow):
         self.timing.setWordWrap(True)
         main.addLayout(actions)
         main.addWidget(self.timing)
+        auto_actions=QHBoxLayout()
+        auto_actions.addWidget(label("自动答题"))
+        auto_actions.addWidget(self.auto_mode)
+        auto_actions.addWidget(self.browser_connect_button)
+        auto_actions.addWidget(self.auto_button)
+        auto_actions.addStretch()
+        main.addLayout(auto_actions)
+        self.browser_status.setMaximumHeight(44)
+        main.addWidget(self.browser_status)
         answer_card, answer_layout = card()
         self.answer_title = label("当前题目 / 答案", "eyebrow")
         self.answer_title.setTextFormat(Qt.RichText)
@@ -248,9 +344,54 @@ class MainWindow(QMainWindow):
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidget(answer_card)
         scroll.setMinimumHeight(230)
+        self.answer_scroll = scroll
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(scroll)
         tabs = QTabWidget()
+        self.detail_tabs = tabs
+        self.roster_widget = QWidget()
+        self.roster_widget.setMinimumHeight(280)
+        roster_layout = QHBoxLayout(self.roster_widget)
+        roster_layout.setContentsMargins(8, 10, 8, 6)
+        roster_layout.setSpacing(18)
+        pool_layout = QVBoxLayout()
+        self.pool_title = label("备选人员 · 0 人", "eyebrow")
+        pool_layout.addWidget(self.pool_title)
+        self.people_search = QLineEdit()
+        self.people_search.setPlaceholderText("输入姓名搜索备选人员")
+        self.people_search.setClearButtonEnabled(True)
+        self.people_search.textChanged.connect(self.refresh_candidate_pool)
+        pool_layout.addWidget(self.people_search)
+        self.candidate_list = QListWidget()
+        self.candidate_list.setAccessibleName("备选人员")
+        self.candidate_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.candidate_list.setAlternatingRowColors(True)
+        self.candidate_list.setMinimumHeight(140)
+        self.candidate_list.itemDoubleClicked.connect(lambda _: self.add_waiting_people())
+        pool_layout.addWidget(self.candidate_list, 1)
+        self.add_people_button = QPushButton("添加选中人员至待考 →")
+        self.add_people_button.clicked.connect(self.add_waiting_people)
+        pool_layout.addWidget(self.add_people_button)
+        roster_layout.addLayout(pool_layout, 1)
+        waiting_layout = QVBoxLayout()
+        self.waiting_title = label("待考人员 · 0 人", "eyebrow")
+        waiting_layout.addWidget(self.waiting_title)
+        waiting_layout.addWidget(label("鼠标拖拽排序，始终先进行最上方就绪人员的考试", "muted", True))
+        self.waiting_list = QListWidget()
+        self.waiting_list.setAccessibleName("待考人员，拖拽可排序")
+        self.waiting_list.setDragDropMode(QAbstractItemView.InternalMove)
+        self.waiting_list.setDefaultDropAction(Qt.MoveAction)
+        self.waiting_list.setDragDropOverwriteMode(False)
+        self.waiting_list.setDropIndicatorShown(True)
+        self.waiting_list.setAlternatingRowColors(True)
+        self.waiting_list.setMinimumHeight(140)
+        self.waiting_list.model().rowsMoved.connect(self.waiting_people_moved)
+        waiting_layout.addWidget(self.waiting_list, 1)
+        self.remove_people_button = QPushButton("移回备选人员")
+        self.remove_people_button.clicked.connect(self.remove_waiting_people)
+        waiting_layout.addWidget(self.remove_people_button)
+        roster_layout.addLayout(waiting_layout, 1)
+        tabs.addTab(self.roster_widget, "备选 / 待考人员")
         self.ocr_text = QTextEdit()
         self.ocr_text.setReadOnly(True)
         self.ocr_text.setPlaceholderText("这里显示本地 OCR 识别到的文字，方便检查是否漏掉题干或选项。")
@@ -268,10 +409,240 @@ class MainWindow(QMainWindow):
         self.logs = QTextEdit()
         self.logs.setReadOnly(True)
         tabs.addTab(self.logs, "导入 / 运行记录")
+        self.auto_report = QTextEdit()
+        self.auto_report.setReadOnly(True)
+        self.auto_report.setPlaceholderText("自动答题进度和未完成题目将显示在这里。")
+        tabs.addTab(self.auto_report,"自动答题记录")
+        self.people_table = QTableWidget(0, 5)
+        self.people_table.setHorizontalHeaderLabels(["姓名", "所在区县", "身份证号", "状态", "结果 / 说明"])
+        self.people_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.people_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.people_table.setSelectionBehavior(QTableWidget.SelectRows)
+        tabs.addTab(self.people_table, "人员考试进度")
         splitter.addWidget(tabs)
         splitter.setSizes([360, 300])
+        tabs.currentChanged.connect(self.detail_tab_changed)
+        self.detail_tab_changed()
         main.addWidget(splitter, 1)
         outer.addLayout(main, 1)
+        self.refresh_browsers()
+        self.browser_combo.currentIndexChanged.connect(self._save_settings)
+        self.refresh_people()
+        self.refresh_controls()
+
+    def detail_tab_changed(self, *args):
+        self.answer_scroll.setVisible(self.detail_tabs.currentWidget() is not self.roster_widget)
+
+    def refresh_browsers(self, selected=None):
+        path = selected if isinstance(selected, str) else (self.browser_combo.currentData() or "")
+        previous = self.browser_combo.blockSignals(True)
+        try:
+            self.browser_combo.clear()
+            self.browser_combo.addItem("自动选择（优先 Chrome / Edge）", "")
+            for choice in discover_browsers(include_unsupported=True):
+                index = self.browser_combo.count()
+                caption = choice.name + ("（不支持自动登录）" if not choice.compatible else "")
+                self.browser_combo.addItem(caption, choice.path)
+                self.browser_combo.setItemData(index, choice.path, Qt.ToolTipRole)
+                self.browser_combo.model().item(index).setEnabled(choice.compatible)
+            index = next((i for i in range(self.browser_combo.count())
+                          if browser_path_key(self.browser_combo.itemData(i)) == browser_path_key(path)), -1)
+            if index < 0:
+                suffix = "" if Path(path).is_file() else "（文件不存在）"
+                self.browser_combo.addItem("自定义浏览器" + suffix, path)
+                index = self.browser_combo.count() - 1
+                self.browser_combo.setItemData(index, path, Qt.ToolTipRole)
+            self.browser_combo.setCurrentIndex(index)
+        finally:
+            self.browser_combo.blockSignals(previous)
+
+    def browse_browser(self):
+        path, _ = QFileDialog.getOpenFileName(self, "选择考试浏览器程序", "", "浏览器程序 (*.exe)")
+        if path:
+            self.refresh_browsers(path)
+            self._save_settings()
+
+    def import_people(self):
+        path, _ = QFileDialog.getOpenFileName(self, "导入人员信息", "", "Excel 人员信息 (*.xlsx)")
+        if path:
+            self.import_people_path(path)
+
+    def import_people_path(self, path):
+        if self.personnel_worker or self.personnel_importing or self.auto.active or self._closing:
+            return
+        self.personnel_importing = True
+        self.refresh_controls()
+        self.launch(lambda _: load_identities(path), self.people_imported, self.people_import_failed)
+
+    def people_imported(self, result):
+        self.personnel_importing = False
+        if not result.candidates:
+            self.people_import_failed("未发现有效人员。" + "；".join(result.issues[:5]))
+            return
+        self.stop_monitor("已导入人员信息")
+        self.auto.session = None
+        self._auto_person_position = None
+        self.candidates = result.candidates
+        self.people = ExamQueue()
+        self.people_search.clear()
+        self.detail_tabs.setCurrentWidget(self.roster_widget)
+        self.person_hint.setText(f"已导入 {len(result.candidates)} 位备选人员；请按姓名搜索并添加到待考列表，拖拽调整考试顺序。")
+        self.log(f"人员导入完成：{len(result.candidates)} 人，跳过 {len(result.issues)} 条异常或重复记录。")
+        for issue in result.issues:
+            self.log(issue)
+        self.refresh_people()
+        self.refresh_controls()
+
+    def people_import_failed(self, message):
+        self.personnel_importing = False
+        self.log(f"人员导入失败：{message}")
+        self.person_hint.setText(message)
+        self.refresh_controls()
+
+    def refresh_people(self):
+        self.people_table.setRowCount(len(self.people.records))
+        for row, record in enumerate(self.people.records):
+            c = record.candidate
+            for column, value in enumerate((c.name, c.district, c.masked_id, record.status, record.detail)):
+                self.people_table.setItem(row, column, QTableWidgetItem(value))
+        self.refresh_candidate_pool()
+        previous = self.waiting_list.currentItem()
+        selected_row = previous.data(Qt.UserRole) if previous else None
+        self.waiting_list.clear()
+        for record in self.people.pending:
+            c = record.candidate
+            item = QListWidgetItem(f"{c.name} · {c.district} · {record.status}")
+            item.setData(Qt.UserRole, c.row)
+            item.setToolTip("拖动调整顺序；软件始终从最上方的就绪人员开始")
+            if record.status not in {"待考试", "加载失败"}:
+                item.setFlags(item.flags() & ~Qt.ItemIsDragEnabled)
+            self.waiting_list.addItem(item)
+            if c.row == selected_row:
+                self.waiting_list.setCurrentItem(item)
+        self.waiting_title.setText(f"待考人员 · {len(self.people.pending)} 人")
+        current = self.people.current
+        if current:
+            c = current.candidate
+            self.person_info.setText(f"当前首位 · {c.name} · {current.status} / 待考 {len(self.people.pending)} 人")
+        else:
+            self.person_info.setText("待考列表为空，请从备选人员添加" if self.candidates else "尚未导入人员信息")
+
+    def refresh_candidate_pool(self):
+        queued = {r.candidate.row for r in self.people.records}
+        available = [c for c in self.candidates if c.row not in queued]
+        query = self.people_search.text().strip().casefold()
+        selected = {item.data(Qt.UserRole) for item in self.candidate_list.selectedItems()}
+        self.candidate_list.clear()
+        for candidate in available:
+            if query and query not in candidate.name.casefold():
+                continue
+            item = QListWidgetItem(f"{candidate.name} · {candidate.district}")
+            item.setData(Qt.UserRole, candidate.row)
+            item.setToolTip(candidate.masked_id)
+            self.candidate_list.addItem(item)
+            item.setSelected(candidate.row in selected)
+        self.pool_title.setText(f"备选人员 · {len(available)} 人 / 搜索结果 {self.candidate_list.count()} 人")
+
+    def add_waiting_people(self):
+        if self.personnel_worker or self.personnel_importing or self.auto.active or self._closing:
+            return
+        rows = {item.data(Qt.UserRole) for item in self.candidate_list.selectedItems()}
+        self.people.add(c for c in self.candidates if c.row in rows)
+        if rows:
+            self.person_hint.setText("已添加到待考列表；可拖拽排序，再点击进行最上方人员的考试。")
+        self.refresh_people()
+        self.refresh_controls()
+
+    def remove_waiting_people(self):
+        if self.personnel_worker or self.auto.active or self.auto.busy or self._closing:
+            return
+        rows = [item.data(Qt.UserRole) for item in self.waiting_list.selectedItems()]
+        self.people.remove(rows)
+        self.refresh_people()
+        self.refresh_controls()
+
+    def waiting_people_moved(self, *args):
+        rows = [self.waiting_list.item(i).data(Qt.UserRole) for i in range(self.waiting_list.count())]
+        try:
+            self.people.reorder(rows)
+        except ValueError as error:
+            self.person_hint.setText(str(error))
+        QTimer.singleShot(0, self.refresh_people)
+        self.refresh_controls()
+
+    def load_person(self):
+        if self.personnel_worker or self.personnel_importing or self.auto.active or self.auto.busy or self._closing:
+            return
+        try:
+            config = SiteConfig(chrome_path=self.browser_combo.currentData() or "")
+            config.validate()
+            candidate = self.people.begin()
+        except ValueError as error:
+            self.person_hint.setText(str(error))
+            return
+        self.stop_monitor("正在加载人员信息")
+        self.auto.session = None
+        self._auto_person_position = None
+        self.auto_report.clear()
+        self.region = None
+        self.region_info.setText("人员验证完成后，请重新框选当前浏览器的题目区域")
+        self.update_border()
+        self.auto_mode.setCurrentIndex(self.auto_mode.findData("screen"))
+        worker = PersonnelWorker(self.data_dir, candidate, config, self)
+        self.personnel_worker = worker
+        worker.progress.connect(self.person_progress)
+        worker.ready.connect(self.person_ready)
+        worker.failed.connect(self.person_failed)
+        worker.finished.connect(self.person_worker_finished)
+        worker.start()
+        self.refresh_people()
+        self.refresh_controls()
+
+    def person_progress(self, message):
+        self.person_hint.setText(message)
+        self.status.setText("正在加载人员")
+        self.log(message)
+
+    def person_ready(self, result):
+        self._browser_handles.append(result["handle"])
+        if self.people.current is not None:
+            self.people.current.status = result["stage"]
+        self.person_hint.setText("请在浏览器完成人员验证，进入答题页后框选区域，再点击“启动自动答题”。")
+        self.status.setText(result["stage"])
+        self.refresh_people()
+
+    def person_failed(self, message):
+        if self.people.current is not None:
+            self.people.current.status, self.people.current.detail = "加载失败", message
+        self.person_hint.setText(message + "；可重试加载或跳过当前人员。")
+        self.status.setText("人员加载已停止")
+        self.log(message)
+        self.refresh_people()
+
+    def person_worker_finished(self):
+        worker = self.personnel_worker
+        self.personnel_worker = None
+        if worker:
+            worker.deleteLater()
+        if self._closing:
+            self.close()
+        else:
+            self.refresh_controls()
+
+    def cancel_person_loading(self):
+        if self.personnel_worker:
+            self.personnel_worker.cancel()
+            self.person_cancel.setEnabled(False)
+            self.person_hint.setText("正在停止加载，已打开的浏览器会保留…")
+
+    def skip_person(self):
+        if self.personnel_worker or self.auto.active or self.auto.busy or self._closing:
+            return
+        self.stop_monitor("已跳过当前人员，浏览器保留")
+        self.people.skip()
+        self.auto.session = None
+        self._auto_person_position = None
+        self.refresh_people()
         self.refresh_controls()
 
     def log(self, text):
@@ -339,16 +710,40 @@ class MainWindow(QMainWindow):
         self.log(f"OCR 预加载未完成，开始识别时将重试：{message}")
 
     def refresh_controls(self):
-        ready = not self.importing and not self.loading and not self._closing
+        personnel_busy = self.personnel_worker is not None or self.personnel_importing
+        ready = not self.importing and not self.loading and not self._closing and not self.auto.active and not personnel_busy
         self.import_button.setEnabled(ready)
         self.clear_button.setEnabled(ready and bool(self.bank.questions))
         self.start_button.setEnabled(ready and bool(self.bank.questions) and self.region is not None)
         self.retry_button.setEnabled(ready and self.running)
         self.select_button.setEnabled(ready)
-        self.search_button.setEnabled(not self._closing)
+        self.search_button.setEnabled(not self._closing and not self.auto.active)
         self.start_button.setText("暂停识别" if self.running else "开始识别")
         self.floating.toggle_button.setText(self.start_button.text())
         self.floating.toggle_button.setEnabled(self.start_button.isEnabled())
+        mode=self.auto_mode.currentData()
+        self.auto_button.setText("暂停自动答题" if self.auto.active else "继续自动答题" if self.auto.can_resume(self.index,mode) else "启动自动答题")
+        target_ready=self.browser_bridge.connected if mode=="dom" else self.region is not None
+        self.auto_button.setEnabled(self.auto.active or (ready and not self.auto.busy and bool(self.bank.questions) and target_ready))
+        self.auto_mode.setEnabled(not self.auto.active and not self._closing and not personnel_busy)
+        self.browser_connect_button.setEnabled(not self.auto.active and not self._closing and not personnel_busy)
+        self.floating.auto_button.setText(self.auto_button.text())
+        self.floating.auto_button.setEnabled(self.auto_button.isEnabled())
+        person_ready = not personnel_busy and not self.auto.active and not self.auto.busy and not self._closing
+        for widget in (self.browser_combo, self.browser_refresh, self.browser_browse, self.people_import_button):
+            widget.setEnabled(person_ready)
+        current = self.people.current
+        can_load = current is not None and current.status in {"待考试", "加载失败"}
+        self.person_button.setEnabled(person_ready and can_load)
+        self.person_button.setText(f"进行{current.candidate.name}的考试" if current else "加载人员信息")
+        self.person_cancel.setVisible(self.personnel_worker is not None)
+        self.person_cancel.setEnabled(self.personnel_worker is not None and not self._closing)
+        self.person_skip.setEnabled(person_ready and current is not None)
+        for widget in (self.people_search, self.candidate_list, self.waiting_list,
+                       self.add_people_button, self.remove_people_button):
+            widget.setEnabled(person_ready)
+        self.waiting_list.setDragEnabled(person_ready)
+        self.waiting_list.setAcceptDrops(person_ready)
 
     def show_search(self):
         if self.search_window is None:
@@ -368,6 +763,8 @@ class MainWindow(QMainWindow):
         self.floating.raise_()
 
     def expand_main(self):
+        if self.auto.mode=="screen":
+            self.auto.stop("已展开主界面，自动答题已暂停，可从当前题继续")
         self.floating.hide()
         if not self._closing:
             self.showNormal()
@@ -498,6 +895,7 @@ class MainWindow(QMainWindow):
         if self.running:
             self.stop_monitor("已暂停")
         elif self.region is not None and self.bank.questions:
+            self.detail_tabs.setCurrentWidget(self.ocr_text)
             self.running = True
             self.tracker.invalidate()
             self._last_issue = ""
@@ -518,6 +916,7 @@ class MainWindow(QMainWindow):
         self.sync_floating()
 
     def stop_monitor(self, reason="已暂停"):
+        self.auto.stop(reason)
         self.running = False
         self.timer.stop()
         self.tracker.invalidate()
@@ -525,6 +924,142 @@ class MainWindow(QMainWindow):
         self.ocr_text.clear()
         self.status.setText(reason)
         self.refresh_controls()
+
+    def toggle_auto(self):
+        if self.auto.active:
+            self.auto.stop("已停止自动答题")
+            return
+        # A physical stop-button click is also seen by the interrupt hook on
+        # mouse-down. Its later clicked signal must not restart the session.
+        if time.monotonic()-self.auto.stopped_at < 1:
+            return
+        mode=self.auto_mode.currentData()
+        if (not self.bank.questions or self.auto.busy or self._closing or self.personnel_worker or self.personnel_importing
+                or mode=="screen" and self.region is None or mode=="dom" and not self.browser_bridge.connected):
+            return
+        resume=self.auto.can_resume(self.index,mode)
+        self.stop_monitor("正在启动自动答题")
+        if self.search_window is not None:
+            self.search_window.hide()
+        if not resume:self.auto_report.clear()
+        self.detail_tabs.setCurrentWidget(self.auto_report)
+        current = self.people.current
+        if current and current.status in {"等待人工验证", "已进入答题页", "已暂停", "正在答题"}:
+            self._auto_person_position = self.people.position
+            current.status = "正在答题"
+            self.refresh_people()
+        self.auto.start(self.index,self.region,mode=mode,resume=resume)
+        self.refresh_controls()
+        if mode=="dom":
+            self.log("网页直连自动答题：从当前题继续，不移动系统鼠标。")
+            return
+        screen = QGuiApplication.screenAt(self.region.center())
+        self.floating.hide()
+        if screen is not None:
+            g = screen.availableGeometry()
+            width,height = self.floating.width(),self.floating.height()
+            candidates = [QRect(g.x()+10,g.y()+10,width,height),
+                          QRect(g.right()-width-10,g.y()+10,width,height),
+                          QRect(g.x()+10,g.bottom()-height-10,width,height),
+                          QRect(g.right()-width-10,g.bottom()-height-10,width,height)]
+            free = next((r for r in candidates if g.contains(r) and not r.intersects(self.region)),None)
+            if free is not None:
+                self.floating.move(free.topLeft())
+                self.floating.show()
+        self.showMinimized()
+        self.log("已启动自动答题；从当前题逐题核验，有未完成题目不交卷。Esc 可暂停后继续。")
+
+    def browser_connection_changed(self,message):
+        self.browser_status.setText(message)
+        if self.auto.active and self.auto.mode=="dom" and (not self.browser_bridge.connected or self.browser_bridge.binding!=self.auto.binding):
+            self.auto.stop("浏览器连接变化；重新连接后可从当前题继续")
+        self.refresh_controls()
+
+    def connect_browser(self):
+        try:code=self.browser_bridge.connection_code
+        except Exception as error:
+            QMessageBox.warning(self,"无法启动浏览器连接",str(error))
+            return
+        dialog=QDialog(self)
+        dialog.setWindowTitle("连接浏览器 · 不占鼠标答题")
+        dialog.resize(620,380)
+        layout=QVBoxLayout(dialog)
+        layout.addWidget(label("1. 在 Chrome / Edge 扩展管理页开启开发者模式，\n   选择“加载已解压的扩展程序”，加载下面的扩展目录。\n2. 切换到答题标签页，点击工具栏 NewXKY 扩展。\n3. 将连接码粘贴到扩展中，点击“连接当前答题页”。",wrap=True))
+        root=Path(sys.executable).parent if getattr(sys,"frozen",False) else Path(__file__).resolve().parents[1]
+        extension=root/"browser_extension"
+        if not extension.is_dir():extension=ASSETS.parent/"browser_extension"
+        path=QLineEdit(str(extension));path.setReadOnly(True);layout.addWidget(path)
+        open_button=QPushButton("打开扩展目录")
+        open_button.clicked.connect(lambda:QDesktopServices.openUrl(QUrl.fromLocalFile(str(extension))))
+        layout.addWidget(open_button)
+        field=QLineEdit(code);field.setReadOnly(True);layout.addWidget(field)
+        copy=QPushButton("复制连接码")
+        copy.clicked.connect(lambda:QApplication.clipboard().setText(code))
+        layout.addWidget(copy)
+        status=label(self.browser_status.text(),wrap=True);layout.addWidget(status)
+        self.browser_bridge.changed.connect(status.setText)
+        close=QPushButton("完成")
+        close.clicked.connect(dialog.accept);layout.addWidget(close)
+        dialog.exec()
+        self.refresh_controls()
+
+    def auto_status(self,message):
+        self.status.setText("自动答题中" if self.auto.active else "自动答题已停止")
+        self.message.setText(emphasize_bank_order(message))
+        self.sync_floating()
+
+    def auto_observed(self,result):
+        session = result["session"]
+        self.ocr_text.setPlainText(result["layout"].text)
+        self.timing.setText(f"第 {session.ordinal} 题 · 本次识别 {result['elapsed']:.2f} 秒 · 已核验 {sum(r.completed for r in session.records)} 题")
+        q = session.question
+        if q is not None:
+            correct = {q.options[k] for k in q.answers}
+            visible = result["view"].options
+            from .bank import normalized
+            mapped = [o for o in visible if normalized(o.text) in {normalized(v) for v in correct}]
+            verified=session.verified_mapping
+            pairs=[(k,session.options[k]["text"])for k,value in (verified or {}).items()if value]
+            if not pairs:pairs=[(o.letter,o.text)for o in mapped if o.complete]
+            screen_order = len(pairs)==len(q.answers)
+            self.answer.setText(" / ".join(k for k,_ in pairs) if screen_order else " / ".join(q.answers))
+            self.answer_title.setText(emphasize_bank_order("自动答题 / 网页答案" if screen_order else "自动答题 / 题库顺序"))
+            self.answer_detail.setText("\n".join(f"{k}. {v}" for k,v in pairs) if screen_order else "\n".join(f"{k}. {q.options[k]}" for k in q.answers))
+            self.question_text.setPlainText(q.stem+"\n\n"+"\n".join(f"{k}. {v}" for k,v in q.options.items()))
+            self.provenance.setText(f"{session.method} · {q.source} · PDF 第 {', '.join(map(str,q.pages))} 页")
+        else:
+            self.answer.setText("—")
+            self.answer_detail.clear()
+            self.question_text.clear()
+            self.provenance.clear()
+        self.auto_report.setPlainText("\n".join(f"第 {r.number} 题：{'已完成' if r.completed else '未完成'} · {r.reason}\n{r.stem}" for r in session.records))
+        self.sync_floating()
+
+    def auto_finished(self,report):
+        self.log(report["reason"])
+        lines = [report["reason"],""]
+        for record in report["records"]:
+            lines.append(f"第 {record.number} 题：{'已完成' if record.completed else '未完成'} · {record.reason}\n{record.stem}\n")
+        self.auto_report.setPlainText("\n".join(lines))
+        if self._auto_person_position is not None and self._auto_person_position == self.people.position:
+            self.people.finish(report["submitted"], report["reason"])
+            self.refresh_people()
+            if report["submitted"]:
+                self._auto_person_position = None
+                self.detail_tabs.setCurrentWidget(self.roster_widget)
+                next_record = self.people.current
+                self.person_hint.setText(
+                    f"已确认交卷，浏览器已保留。请选择下次使用的浏览器，再点击“进行{next_record.candidate.name}的考试”。"
+                    if next_record else "待考列表已处理完毕，可从备选人员继续添加；考试窗口均保留。")
+                if not self._closing:
+                    QTimer.singleShot(0, self.expand_main)
+        self.refresh_controls()
+
+    def _auto_idle(self):
+        if self._closing and not self._jobs and not self.auto.busy:
+            self.close()
+        elif not self._closing:
+            self.refresh_controls()
 
     def retry(self):
         self.tracker.invalidate()
@@ -641,7 +1176,8 @@ class MainWindow(QMainWindow):
     def _read_settings(self):
         try:
             data = json.loads((self.data_dir / "settings.json").read_text(encoding="utf-8"))
-            rect = QRect(*data["region"])
+            self.refresh_browsers(data.get("browser_path", ""))
+            rect = QRect(*data["region"]) if data.get("region") else QRect()
             if rect.width() >= 120 and rect.height() >= 80 and any(s.geometry().contains(rect) for s in QGuiApplication.screens()):
                 self.region = rect
                 self.region_info.setText(f"已恢复上次区域\n{rect.x()}, {rect.y()} · {rect.width()} × {rect.height()}")
@@ -650,28 +1186,31 @@ class MainWindow(QMainWindow):
             pass
 
     def _save_settings(self):
-        if self.region is None:
-            return
         try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
             path = self.data_dir / "settings.json"
             temporary = path.with_suffix(".tmp")
-            temporary.write_text(json.dumps({"region": self.region.getRect()}), encoding="utf-8")
+            temporary.write_text(json.dumps({"region": self.region.getRect() if self.region is not None else None,
+                                             "browser_path": self.browser_combo.currentData() or ""}), encoding="utf-8")
             temporary.replace(path)
         except OSError as error:
             self.log(f"区域设置未保存：{error}")
 
     def closeEvent(self, event):
+        self._closing = True
+        self.auto.stop("软件已关闭，自动答题已停止")
+        if self.personnel_worker:
+            self.personnel_worker.cancel()
         self.timer.stop()
         self.running = False
         self.tracker.invalidate()
-        self._closing = True
+        self.browser_bridge.close()
         self.border.close()
         self.floating.close()
         if self.search_window is not None:
             self.search_window.close()
         self._save_settings()
-        if self._jobs:
+        if self._jobs or self.auto.busy or self.personnel_worker:
             self.setEnabled(False)
             self.status.setText("正在完成后台任务后退出…")
             event.ignore()
@@ -680,6 +1219,9 @@ class MainWindow(QMainWindow):
 
 
 def run(data_dir=None, *, hide_console=False):
+    from .lifetime import startup_allowed
+    if not startup_allowed():
+        return 0
     app = QApplication(sys.argv)
     app.setApplicationName("NewXKY")
     app.setOrganizationName("NewXKY")

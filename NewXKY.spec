@@ -5,8 +5,11 @@ from importlib.metadata import distributions
 
 root = Path(SPECPATH)
 datas = collect_data_files('rapidocr_onnxruntime')
+datas += collect_data_files('ddddocr')
+datas += collect_data_files('playwright')
 datas += [(str(root / 'README.md'), '.'), (str(root / 'THIRD_PARTY_NOTICES.md'), '.')]
 datas += [(str(root / 'assets' / name), 'assets') for name in ('NewXKY.ico', 'chevron-down.svg')]
+datas += [(str(path), 'browser_extension') for path in (root/'browser_extension').glob('*') if path.is_file()]
 for distribution in distributions():
     for entry in distribution.files or []:
         parts = tuple(str(part).lower() for part in entry.parts)
@@ -17,7 +20,7 @@ for distribution in distributions():
 a = Analysis([str(root / 'main.py')], pathex=[str(root)],
     binaries=collect_dynamic_libs('onnxruntime'), datas=datas,
     hiddenimports=['rapidocr_onnxruntime', 'pdfplumber', 'PIL', 'onnxruntime'],
-    excludes=['tkinter', 'matplotlib', 'IPython', 'notebook', 'pytest', 'playwright', 'ddddocr', 'torch', 'tensorflow'],
+    excludes=['tkinter', 'matplotlib', 'IPython', 'notebook', 'pytest', 'torch', 'tensorflow'],
     noarchive=False)
 # Prevent unrelated PATH tools from contributing incompatible versioned ICU DLLs.
 a.binaries = [entry for entry in a.binaries if Path(entry[0]).name.lower() not in {'icuuc.dll', 'icuin.dll', 'icudt78.dll'}]

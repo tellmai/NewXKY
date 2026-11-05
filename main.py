@@ -1,8 +1,12 @@
-import argparse
-from multiprocessing import freeze_support
+from newxky.lifetime import startup_allowed
 
 
-if __name__ == "__main__":
+def main():
+    if not startup_allowed():
+        return 0
+    import argparse
+    from multiprocessing import freeze_support
+
     freeze_support()
     parser = argparse.ArgumentParser(description="NewXKY 区域答题助手")
     parser.add_argument("--data-dir", help="题库和区域设置的保存目录")
@@ -14,6 +18,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.self_check:
         from newxky.diagnostics import self_check
-        raise SystemExit(self_check(args.self_check, args.pdf, args.image, args.crop))
+        return self_check(args.self_check, args.pdf, args.image, args.crop)
     from newxky.ui import run
-    raise SystemExit(run(args.data_dir, hide_console=args.hide_console))
+    return run(args.data_dir, hide_console=args.hide_console)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

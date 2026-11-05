@@ -1,7 +1,38 @@
 """Offline Chinese OCR; same-baseline fragments are ordered left to right."""
 import re
 import unicodedata
+import hashlib
+from collections import OrderedDict
+from dataclasses import dataclass
 from threading import Lock
+
+
+@dataclass(frozen=True)
+class OCRLine:
+    box: tuple
+    text: str
+    confidence: float
+
+    @property
+    def rect(self):
+        xs, ys = zip(*self.box)
+        return min(xs), min(ys), max(xs), max(ys)
+
+
+@dataclass(frozen=True)
+class OCRLayout:
+    text: str
+    lines: tuple[OCRLine, ...]
+    width: int
+    height: int
+
+
+def _remember(cache, key, value, limit):
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > limit:
+        cache.popitem(last=False)
+    return value
 
 
 def option_chips(pixels):
@@ -187,10 +218,55 @@ def _inside_chip(box, chip):
             and y - 2 <= top <= bottom <= y + h + 2)
 
 
+def _refine_uncertain_rows(engine, pixels, rows):
+    """Native-resolution rereads for a few uncertain body lines, never a
+    whole-frame upscale. Require agreement and retain semantic uncertainty.
+    """
+    import cv2
+    result = list(rows)
+    uncertain = sorted((i for i,(_,text,score) in enumerate(rows)
+                        if .35 <= score < .90 and len(str(text)) >= 4),key=lambda i:rows[i][2])[:4]
+    for i in uncertain:
+        box,text,score = rows[i]
+        x0 = max(0,round(min(p[0] for p in box))-2)
+        y0 = max(0,round(min(p[1] for p in box))-2)
+        x1 = min(pixels.shape[1],round(max(p[0] for p in box))+2)
+        y1 = min(pixels.shape[0],round(max(p[1] for p in box))+2)
+        crop = pixels[y0:y1,x0:x1]
+        if not crop.size:
+            continue
+        reads = []
+        for scale in (1,1.5):
+            variant = cv2.resize(crop,None,fx=scale,fy=scale,interpolation=cv2.INTER_CUBIC) if scale!=1 else crop
+            reading = engine(variant,use_det=False)
+            if reading:
+                reads.append((str(reading[0][0]).strip(),float(reading[0][1])))
+        if len(reads)!=2 or reads[0][0]!=reads[1][0] or min(r[1] for r in reads)<.9:
+            continue
+        replacement = reads[0][0]
+        average = sum(r[1] for r in reads)/2
+        if average < score+.04:
+            continue
+        critical = lambda value:re.findall(r"不|未|无|非|禁止|严禁|不得|\d+(?:\.\d+)?|[%％]",value)
+        if critical(text) != critical(replacement):
+            # Preserve the unresolved text but forbid automatic selection on it.
+            result[i] = (box,text,min(score,.69))
+        else:
+            result[i] = (box,replacement,average)
+    return result
+
+
 class LocalOCR:
     def __init__(self):
         self._engine = None
         self._engine_lock = Lock()
+        self._recognition_lock = Lock()
+        self._layouts = OrderedDict()
+        self._badges = OrderedDict()
+        self._last_signature = None
+        self._last_layout = None
+        self._last_chips = ()
+        self.stats = {"full": 0, "exact_cache": 0, "text_cache": 0, "badge_cache": 0}
 
     def warmup(self):
         if self._engine is None:
@@ -200,24 +276,66 @@ class LocalOCR:
                     self._engine = OCREngine()
 
     def recognize(self, image: bytes) -> str:
+        return self.recognize_layout(image).text
+
+    def recognize_layout(self, image: bytes, *, reuse_text=False) -> OCRLayout:
+        """Retain original hit-test geometry; serialize inference across workers.
+
+        Automation may reuse geometry after a colour-only selection change. Its
+        selection and enabled states are ALWAYS read from the fresh pixels.
+        """
         self.warmup()
-        # Keep low-confidence lines too: dropping one could manufacture a
-        # shorter, incorrect match. Desktop text is upright, so skip rotation.
-        rows = self._engine(image)
-        # Small A/B/C/D badges are often below the detector's text size even
-        # when option text is large. Recognize each visible badge independently;
-        # never invent letters from its position or from the bank's order.
+        with self._recognition_lock:
+            return self._recognize_layout(image, reuse_text)
+
+    def _recognize_layout(self, image, reuse_text):
+        key = hashlib.blake2b(image, digest_size=16).digest()
+        if key in self._layouts:
+            self.stats["exact_cache"] += 1
+            self._layouts.move_to_end(key)
+            return self._layouts[key]
         import cv2
         import numpy as np
         pixels = cv2.imdecode(np.frombuffer(image, dtype=np.uint8), cv2.IMREAD_COLOR)
-        for x, y, w, h in option_chips(pixels):
+        if pixels is None:
+            raise ValueError("无法读取截图")
+        chips = option_chips(pixels)
+        signature = None
+        if reuse_text:
+            from .monitor import text_signature, same_text_signature
+            signature = text_signature(cv2.cvtColor(pixels, cv2.COLOR_BGR2GRAY))
+            if (self._last_layout is not None and self._last_signature is not None
+                    and same_text_signature(self._last_signature, signature)):
+                reused = self._reuse_badges(pixels,chips)
+                if reused is not None:
+                    self.stats["text_cache"] += 1
+                    self._last_signature,self._last_layout,self._last_chips = signature,reused,chips
+                    return _remember(self._layouts,key,reused,6)
+        # Keep low-confidence lines too: dropping one could manufacture a
+        # shorter, incorrect match. Desktop text is upright, so skip rotation.
+        # Keep the byte input compatible with both supported RapidOCR versions.
+        rows = self._engine(image)
+        self.stats["full"] += 1
+        rows = _refine_uncertain_rows(self._engine,pixels,rows)
+        # Small A/B/C/D badges are often below the detector's text size even
+        # when option text is large. Recognize each visible badge independently;
+        # never invent letters from its position or from the bank's order.
+        for x, y, w, h in chips:
             inside = [row for row in rows if _inside_chip(row[0], (x, y, w, h))]
             known = [row for row in inside if re.fullmatch(r"[A-H][.]?", row[1].strip()) and row[2] >= .85]
-            if len(inside) == len(known) == 1:
-                continue
             inset_x, inset_y = round(w * .25), round(h * .2)
             crop = pixels[y + inset_y:y + h - inset_y, x + inset_x:x + w - inset_x]
-            recognized = _recognize_option_chip(self._engine, crop)
+            crop_key = (crop.shape, hashlib.blake2b(crop.tobytes(), digest_size=16).digest())
+            if len(inside) == len(known) == 1:
+                _remember(self._badges,crop_key,(known[0][1].strip()[0],known[0][2]),64)
+                continue
+            if crop_key in self._badges:
+                self.stats["badge_cache"] += 1
+                recognized = self._badges[crop_key]
+                self._badges.move_to_end(crop_key)
+            else:
+                recognized = _remember(self._badges, crop_key,
+                                       _recognize_option_chip(self._engine, crop), 64)
             if recognized:
                 letter, score = recognized
                 # A Chinese-looking glyph (e.g. B -> 巴) inside this same badge
@@ -225,4 +343,38 @@ class LocalOCR:
                 rows = [row for row in rows if not _inside_chip(row[0], (x, y, w, h))]
                 rows.append(([[x + inset_x, y + inset_y], [x + w - inset_x, y + inset_y],
                               [x + w - inset_x, y + h - inset_y], [x + inset_x, y + h - inset_y]], letter, score))
-        return text_from_rows(rows)
+        lines = tuple(OCRLine(tuple(tuple(float(v) for v in p) for p in box), str(text), float(score))
+                      for box, text, score in rows)
+        layout = OCRLayout(text_from_rows(rows), lines, pixels.shape[1], pixels.shape[0])
+        # The signature and its layout must be updated together, including when
+        # a caller alternates detailed automation OCR and ordinary manual OCR.
+        self._last_signature, self._last_layout = signature, layout
+        self._last_chips = chips
+        return _remember(self._layouts, key, layout, 6)
+
+    def _reuse_badges(self,pixels,chips):
+        """Text masks ignore controls; re-read actual letters before reusing
+        body geometry, so a badge-letter change cannot inherit an old label.
+        """
+        if len(chips)!=len(self._last_chips):
+            return None
+        if any(max(abs(a-b) for a,b in zip(now,old))>3 for now,old in zip(chips,self._last_chips)):
+            return None
+        rows = [(line.box,line.text,line.confidence) for line in self._last_layout.lines]
+        for (x,y,w,h),old_chip in zip(chips,self._last_chips):
+            ix,iy = round(w*.25),round(h*.2)
+            crop = pixels[y+iy:y+h-iy,x+ix:x+w-ix]
+            key = (crop.shape,hashlib.blake2b(crop.tobytes(),digest_size=16).digest())
+            if key in self._badges:
+                self.stats["badge_cache"] += 1
+                recognized = self._badges[key]
+                self._badges.move_to_end(key)
+            else:
+                recognized = _remember(self._badges,key,_recognize_option_chip(self._engine,crop),64)
+            if not recognized:
+                return None
+            letter,score = recognized
+            rows = [row for row in rows if not _inside_chip(row[0],old_chip)]
+            rows.append(([[x+ix,y+iy],[x+w-ix,y+iy],[x+w-ix,y+h-iy],[x+ix,y+h-iy]],letter,score))
+        lines = tuple(OCRLine(tuple(tuple(p) for p in box),text,float(score)) for box,text,score in rows)
+        return OCRLayout(text_from_rows(rows),lines,pixels.shape[1],pixels.shape[0])

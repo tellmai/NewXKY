@@ -1,6 +1,47 @@
 """Adapt the legacy and current RapidOCR APIs to a shared local model pipeline."""
 from pathlib import Path
 import os
+import hashlib
+from collections import OrderedDict
+
+
+class CachedRecognizer:
+    """Cache exact detected line crops, including unchanged options/footer.
+
+    Hash both dimensions and original bytes: similar glyphs, negations and
+    decimals must never share a cache entry. No image contents are retained.
+    """
+    def __init__(self,recognizer,limit=256):
+        self.recognizer = recognizer
+        self.limit = limit
+        self.cache = OrderedDict()
+        self.hits = self.misses = 0
+
+    def __getattr__(self,name):
+        return getattr(self.recognizer,name)
+
+    def __call__(self,images,return_word_box=False):
+        if return_word_box:
+            return self.recognizer(images,return_word_box)
+        import numpy as np
+        images = [images] if isinstance(images,np.ndarray) else images
+        keys = [(image.shape,hashlib.blake2b(image.tobytes(),digest_size=16).digest()) for image in images]
+        missing = list(dict.fromkeys(key for key in keys if key not in self.cache))
+        elapsed = 0
+        self.hits += len(keys)-len(missing)
+        self.misses += len(missing)
+        if missing:
+            positions = {key:i for i,key in enumerate(keys)}
+            values,elapsed = self.recognizer([images[positions[key]] for key in missing],False)
+            for key,value in zip(missing,values):
+                self.cache[key] = value
+        result = []
+        for key in keys:
+            result.append(self.cache[key])
+            self.cache.move_to_end(key)
+        while len(self.cache)>self.limit:
+            self.cache.popitem(last=False)
+        return result,elapsed
 
 
 class OCREngine:
@@ -29,6 +70,7 @@ class OCREngine:
         else:
             # Long and short lines padded together waste CPU on wide tensors.
             self.engine = RapidOCR(intra_op_num_threads=threads, inter_op_num_threads=1, rec_batch_num=1)
+            self.engine.text_rec = CachedRecognizer(self.engine.text_rec)
             self.modern = False
 
     def __call__(self, image, *, use_det=True):

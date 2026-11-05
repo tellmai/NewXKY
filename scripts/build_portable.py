@@ -114,13 +114,21 @@ def main():
     for name in ("main.py", "portable_start.py", "requirements-portable.txt", "THIRD_PARTY_NOTICES.md"):
         shutil.copy2(ROOT / name, output / name)
     shutil.copytree(ROOT / "newxky", output / "newxky", dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(ROOT / "browser_extension",output / "browser_extension",dirs_exist_ok=True)
+    if (ROOT / "assets").is_dir():
+        shutil.copytree(ROOT / "assets", output / "assets", dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("__pycache__"))
     launcher = '@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\nstart "NewXKY" "runtime\\pythonw.exe" "portable_start.py"\r\n'
     (output / "启动软件.cmd").write_bytes(launcher.encode("utf-8"))
     diagnostic = '@echo off\r\nchcp 65001 >nul\r\ncd /d "%~dp0"\r\n"runtime\\python.exe" "main.py"\r\npause\r\n'
     (output / "启动并查看错误.cmd").write_bytes(diagnostic.encode("utf-8"))
     (output / "使用说明.txt").write_text(
         "NewXKY 免安装便携版\n\n1. 将整个 ZIP 解压到普通文件夹。\n2. 双击“启动软件.cmd”。不要在 ZIP 内直接运行。\n"
-        "3. 导入 PDF，框选题目区域，再开始识别。\n4. 看得全时按网页选项顺序显示；看不全时按题库顺序显示并标明。\n\n"
+        "3. 导入 PDF 题库，选择考试浏览器，导入人员 Excel（所在的区县、姓名、身份证号）。\n"
+        "4. 导入后仅进入备选人员；可按姓名搜索并添加到待考列表，用鼠标拖拽调整顺序。\n"
+        "5. 点击进行待考列表首位人员的考试，在浏览器完成人员验证后，框选完整题干、选项和底部按钮，再启动自动答题。\n"
+        "6. 确认交卷后保留浏览器；可重新选择浏览器，点击进行下一人的考试。\n"
+        "7. 也可手动打开答题页，框选后开始识别或通过浏览器扩展连接网页。\n\n"
         "本包内含 Python、Qt、OCR 模型和依赖，无需另外安装 Python 或联网下载模型。\n"
         "程序数据保存在 data 文件夹。请保留 runtime 和 newxky 文件夹。\n"
         "此版本使用 Python 官方签名的运行程序，不包含原 PyInstaller NewXKY.exe。\n"
@@ -129,6 +137,11 @@ def main():
     metadata = {"python_version": PYTHON_VERSION, "python_source": PYTHON_URL, "python_sha256": PYTHON_SHA256,
                 "model_sha256": {file.name: hashlib.sha256(file.read_bytes()).hexdigest() for file in model_dir.glob("*.onnx")},
                 "runtime_signatures": signatures, "format": "portable-python", "platform": "Windows x64"}
+    revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True)
+    metadata["source_revision"] = revision.stdout.strip() if revision.returncode == 0 else None
+    app_files = [output / "main.py", output / "portable_start.py", *sorted((output / "newxky").rglob("*.py"))]
+    metadata["application_sha256"] = {path.relative_to(output).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                                     for path in app_files}
     (output / "build-info.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
     shutil.copy2(ROOT / "验证记录.md", output / "验证记录.md")
     archive = output.with_suffix(".zip")

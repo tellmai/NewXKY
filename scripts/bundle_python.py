@@ -28,7 +28,8 @@ def main():
                         ignore=shutil.ignore_patterns("site-packages", "__pycache__", "test", "tests"))
     packages = destination / "Lib/site-packages"
     packages.mkdir(exist_ok=True)
-    todo = ["PySide6-Essentials", "pdfplumber", "rapidocr-onnxruntime", "Pillow"]
+    todo = ["PySide6-Essentials", "pdfplumber", "rapidocr-onnxruntime", "Pillow",
+            "websockets", "playwright", "openpyxl", "ddddocr"]
     seen = set()
     versions = []
     while todo:

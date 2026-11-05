@@ -1,6 +1,14 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
+if exist "runtime\pythonw.exe" (
+    start "NewXKY" "runtime\pythonw.exe" "portable_start.py"
+    exit /b
+)
+if exist ".venv\Scripts\pythonw.exe" (
+    start "NewXKY" ".venv\Scripts\pythonw.exe" "portable_start.py"
+    exit /b
+)
 if exist "dist\NewXKY-portable\runtime\pythonw.exe" (
     start "NewXKY" "dist\NewXKY-portable\runtime\pythonw.exe" "dist\NewXKY-portable\portable_start.py" --data-dir "%~dp0data"
     exit /b
