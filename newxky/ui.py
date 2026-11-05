@@ -35,6 +35,7 @@ from .personnel_controller import PersonnelWorker
 from .personnel_results import PersonnelResults
 from .progress import ProgressJournal
 from .roster import RosterList
+from .default_bank import restore_startup_bank
 
 
 STYLE = """
@@ -464,7 +465,7 @@ class MainWindow(QMainWindow):
         self.pool_title = label("备选人员 · 0 人", "eyebrow")
         pool_layout.addWidget(self.pool_title)
         self.people_search = QLineEdit()
-        self.people_search.setPlaceholderText("输入姓名搜索备选人员")
+        self.people_search.setPlaceholderText("输入姓名、区县或身份证号")
         self.people_search.setClearButtonEnabled(True)
         self.people_search.textChanged.connect(self.refresh_candidate_pool)
         pool_layout.addWidget(self.people_search)
@@ -601,7 +602,7 @@ class MainWindow(QMainWindow):
         self.personnel_importing = True
         self.person_hint.setText("正在加载人员文件夹内的全部 Excel…")
         self.refresh_controls()
-        self.launch(lambda _:load_identity_folder(folder,excluded=(self.app_dir/"人员记录",self.data_dir/"人员结果")),
+        self.launch(lambda _:load_identity_folder(folder),
                     self.people_imported,self.people_import_failed)
 
     def import_people_path(self, path):
@@ -623,7 +624,7 @@ class MainWindow(QMainWindow):
         self.people = ExamQueue()
         if self.journal:
             try:
-                self.journal.register(self.candidates)
+                self.journal.register(self.candidates,replace_pending=bool(result.source_folder))
             except (OSError,sqlite3.Error) as error:
                 self.log(f"人员历史记录保存失败：{error}")
         self.results_store = PersonnelResults(self.data_dir, self.candidates,self.journal)
@@ -636,6 +637,8 @@ class MainWindow(QMainWindow):
         self.detail_tabs.setCurrentWidget(self.roster_widget)
         self.person_hint.setText(f"已从 {result.files} 个文件导入 {len(result.candidates)} 人，去重 {result.duplicates} 条；可搜索或拖拽添加至待考。")
         self.log(f"人员导入完成：{len(result.candidates)} 人，跳过 {len(result.issues)} 条异常或重复记录。")
+        if result.source_folder:
+            self.log(f"人员目录：{result.source_folder}；读取本层 {result.files} 个文件，去重 {result.duplicates} 条。")
         for issue in result.issues:
             self.log(issue)
         self.refresh_people()
@@ -659,9 +662,9 @@ class MainWindow(QMainWindow):
         self.waiting_list.clear()
         for record in self.people.pending:
             c = record.candidate
-            item = QListWidgetItem(f"{c.name} · {c.district} · {record.status}")
+            item = QListWidgetItem(f"{c.name} · {c.district} · {record.status}\n身份证号：{c.id_number}")
             item.setData(Qt.UserRole, c.row)
-            item.setToolTip("拖动调整顺序；软件始终从最上方的就绪人员开始")
+            item.setToolTip(f"身份证号：{c.id_number}\n拖动调整顺序；软件始终从最上方的就绪人员开始")
             self.waiting_list.addItem(item)
             if c.row == selected_row:
                 self.waiting_list.setCurrentItem(item)
@@ -680,11 +683,11 @@ class MainWindow(QMainWindow):
         selected = {item.data(Qt.UserRole) for item in self.candidate_list.selectedItems()}
         self.candidate_list.clear()
         for candidate in available:
-            if query and query not in candidate.name.casefold():
+            if query and not any(query in value.casefold() for value in (candidate.name,candidate.district,candidate.id_number)):
                 continue
-            item = QListWidgetItem(f"{candidate.name} · {candidate.district}")
+            item = QListWidgetItem(f"{candidate.name} · {candidate.district}\n身份证号：{candidate.id_number}")
             item.setData(Qt.UserRole, candidate.row)
-            item.setToolTip(candidate.masked_id)
+            item.setToolTip(f"身份证号：{candidate.id_number}")
             self.candidate_list.addItem(item)
             item.setSelected(candidate.row in selected)
         self.pool_title.setText(f"备选人员 · {len(available)} 人 / 搜索结果 {self.candidate_list.count()} 人")
@@ -960,16 +963,24 @@ class MainWindow(QMainWindow):
             self.close()
 
     def restore_bank(self):
+        if self._closing:
+            return
         self.loading = True
         self.refresh_controls()
-        self.launch(lambda _: (lambda bank: (bank, KnowledgeIndex(bank.questions)))(read_bank(self.data_dir / "bank.json")),
-                    self.bank_restored, self.restore_failed)
+        def restore(_):
+            bank,notes=restore_startup_bank(self.data_dir,self.app_dir)
+            return bank,KnowledgeIndex(bank.questions),notes
+        self.launch(restore,self.bank_restored,self.restore_failed)
 
     def bank_restored(self, result):
-        self.bank, self.index = result
+        self.bank, self.index = result[:2]
         self.loading = False
         self.show_bank()
         self.log(f"已恢复 {len(self.bank.questions)} 道题。" if self.bank.questions else "请导入 PDF 题库。")
+        if len(result)>2 and result[2]:
+            self.import_status.setText(result[2][0])
+            for message in result[2]:
+                self.log(message)
 
     def restore_failed(self, message):
         self.loading = False

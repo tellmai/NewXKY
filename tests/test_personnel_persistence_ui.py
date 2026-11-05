@@ -126,3 +126,23 @@ def test_locked_history_keeps_a_retry_control_and_refreshes_standard_name(tmp_pa
     assert ui.results_retry.isHidden()
     assert load_identities(destination).candidates[0].key == PEOPLE[0].key
     ui.close()
+
+
+def test_same_name_same_district_people_show_distinct_full_ids_in_both_lists(tmp_path,monkeypatch):
+    from newxky.identities import Candidate
+    first=Candidate(2,"演示区","同名考生","110101199001010011")
+    second=Candidate(3,first.district,first.name,"110101199001010012")
+    app,ui=window(tmp_path,monkeypatch)
+    ui.people_imported(IdentityImport([first,second],[],"人员"))
+    assert ui.candidate_list.count()==2
+    for index,person in enumerate((first,second)):
+        assert person.id_number in ui.candidate_list.item(index).text()
+    ui.people_search.setText(second.id_number)
+    assert ui.candidate_list.count()==1
+    ui.candidate_list.item(0).setSelected(True)
+    ui.add_waiting_people()
+    assert ui.people.current.candidate.key==second.key
+    assert second.id_number in ui.waiting_list.item(0).text()
+    ui.people_search.clear()
+    assert ui.candidate_list.count()==1 and first.id_number in ui.candidate_list.item(0).text()
+    ui.close()

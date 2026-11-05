@@ -6,6 +6,7 @@ dist/
 runtime/
 data/
 人员记录/
+题库/
 tmp/
 *.log
 .env

@@ -31,6 +31,7 @@ class IdentityImport:
     sheet: str
     files: int = 1
     duplicates: int = 0
+    source_folder: str = ""
 
 
 @dataclass(frozen=True)
@@ -101,16 +102,14 @@ def load_identities(path):
         wb.close()
 
 
-def load_identity_folder(path, excluded=()):
-    """Combine every workbook, retaining distinct district/name/ID triples."""
+def load_identity_folder(path):
+    """Combine this directory's workbooks using district/name/ID triples."""
     folder = Path(path).resolve()
     if not folder.is_dir():
         raise ValueError("人员信息文件夹不存在，请重新选择")
-    excluded = tuple(Path(root).resolve() for root in excluded)
-    files = sorted((file for file in folder.rglob("*.xlsx")
+    files = sorted((file for file in folder.glob("*.xlsx")
                     if not file.name.startswith("~$") and file.is_file()
-                    and file.resolve().is_relative_to(folder)
-                    and not any(file.resolve().is_relative_to(root) for root in excluded)),
+                    and file.resolve().is_relative_to(folder)),
                    key=lambda file:str(file.relative_to(folder)).casefold())
     if not files:
         raise ValueError("所选文件夹中没有可导入的 .xlsx 文件")
@@ -130,7 +129,7 @@ def load_identity_folder(path, excluded=()):
                 continue
             seen.add(candidate.key)
             candidates.append(replace(candidate,row=len(candidates)+2))
-    return IdentityImport(candidates,issues,f"{len(files)} 个文件",len(files),duplicates)
+    return IdentityImport(candidates,issues,f"{len(files)} 个文件",len(files),duplicates,str(folder))
 
 
 @dataclass

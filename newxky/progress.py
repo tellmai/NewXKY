@@ -21,7 +21,10 @@ class ProgressJournal:
             db.execute("""CREATE TABLE IF NOT EXISTS people (
                 person_id INTEGER PRIMARY KEY, district TEXT NOT NULL, name TEXT NOT NULL,
                 id_number TEXT NOT NULL, added_on TEXT NOT NULL, completed_on TEXT,
+                active INTEGER NOT NULL DEFAULT 1,
                 UNIQUE(district,name,id_number))""")
+            if "active" not in {row[1] for row in db.execute("PRAGMA table_info(people)")}:
+                db.execute("ALTER TABLE people ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
             db.execute("""CREATE TABLE IF NOT EXISTS receipts (
                 session_id TEXT PRIMARY KEY, completed_at TEXT NOT NULL,
                 person_id INTEGER REFERENCES people(person_id))""")
@@ -38,10 +41,13 @@ class ProgressJournal:
         with self._database() as db:
             return db.execute("SELECT COUNT(*) FROM receipts").fetchone()[0]
 
-    def register(self, candidates):
+    def register(self, candidates, *, replace_pending=False):
         day = self.clock().date().isoformat()
         with self._database() as db:
-            db.executemany("INSERT OR IGNORE INTO people(district,name,id_number,added_on) VALUES(?,?,?,?)",
+            if replace_pending:
+                db.execute("UPDATE people SET active=0 WHERE completed_on IS NULL")
+            db.executemany("""INSERT INTO people(district,name,id_number,added_on) VALUES(?,?,?,?)
+                            ON CONFLICT(district,name,id_number) DO UPDATE SET active=1""",
                            [(*candidate.key,day) for candidate in candidates])
 
     def record_success(self, session_id, candidate=None):
@@ -75,7 +81,10 @@ class ProgressJournal:
             completed,remaining,today = [],[],[]
             for row in people:
                 candidate = Candidate(row["person_id"],row["district"],row["name"],row["id_number"])
-                (completed if row["completed_on"] else remaining).append(candidate)
+                if row["completed_on"]:
+                    completed.append(candidate)
+                elif row["active"]:
+                    remaining.append(candidate)
                 if row["person_id"] in today_ids:
                     today.append(candidate)
             outputs = (("已完成",f"已完成{day}.xlsx",today),
