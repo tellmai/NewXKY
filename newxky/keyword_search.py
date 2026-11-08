@@ -93,9 +93,9 @@ class SearchWindow(QDialog):
         result_layout.setContentsMargins(12, 10, 12, 10)
         result_layout.setSpacing(8)
         result_layout.addWidget(label("搜索结果", "searchPanelTitle"))
-        self.results = QTableWidget(0, 4)
+        self.results = QTableWidget(0, 5)
         self.results.setObjectName("searchResults")
-        self.results.setHorizontalHeaderLabels(["题型", "题干", "答案", "来源"])
+        self.results.setHorizontalHeaderLabels(["序号", "题型", "题干", "答案", "来源"])
         self.results.setEditTriggers(QTableWidget.NoEditTriggers)
         self.results.setSelectionBehavior(QTableWidget.SelectRows)
         self.results.setSelectionMode(QTableWidget.SingleSelection)
@@ -104,10 +104,11 @@ class SearchWindow(QDialog):
         self.results.verticalHeader().setVisible(False)
         self.results.verticalHeader().setDefaultSectionSize(58)
         self.results.horizontalHeader().setHighlightSections(False)
-        self.results.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.results.setColumnWidth(0, 70)
-        self.results.setColumnWidth(2, 80)
-        self.results.setColumnWidth(3, 112)
+        self.results.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.results.setColumnWidth(0, 58)
+        self.results.setColumnWidth(1, 70)
+        self.results.setColumnWidth(3, 80)
+        self.results.setColumnWidth(4, 112)
         result_layout.addWidget(self.results, 1)
         splitter.addWidget(result_panel)
 
@@ -157,6 +158,7 @@ class SearchWindow(QDialog):
         self.results.setRowCount(len(self.matches))
         for row, question in enumerate(self.matches):
             values = (
+                str(row + 1),
                 question.kind,
                 question.stem,
                 " / ".join(question.answers),
@@ -165,7 +167,7 @@ class SearchWindow(QDialog):
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
-                if column != 1:
+                if column != 2:
                     item.setTextAlignment(Qt.AlignCenter)
                 self.results.setItem(row, column, item)
         self.results.clearSelection()

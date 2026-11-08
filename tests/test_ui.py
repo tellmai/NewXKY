@@ -130,7 +130,8 @@ def test_keyword_search_window_shows_source_label():
     try:
         dialog.set_query("重要数据")
         assert dialog.results.rowCount() == 1
-        assert dialog.results.item(0, 3).text() == "2026知识库"
+        assert dialog.results.item(0, 0).text() == "1"
+        assert dialog.results.item(0, 4).text() == "2026知识库"
         assert "来源：2026知识库" in dialog.detail.toPlainText()
     finally:
         dialog.close()

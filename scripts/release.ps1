@@ -16,6 +16,11 @@ $distRoot = Join-Path $projectRoot "dist\release-$stamp"
 if ($LASTEXITCODE -ne 0) { throw '构建失败' }
 
 $app = Join-Path $distRoot 'NewXKY'
+$builtExe = Join-Path $projectRoot "build\release-$stamp\NewXKY\NewXKY.exe"
+$distExe = Join-Path $app 'NewXKY.exe'
+if (-not (Test-Path $distExe) -and (Test-Path $builtExe)) {
+    Copy-Item -LiteralPath $builtExe -Destination $distExe -Force
+}
 & $python scripts\package_executable.py --app-dir $app
 if ($LASTEXITCODE -ne 0) { throw '免安装包生成失败' }
 
