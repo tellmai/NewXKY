@@ -1,4 +1,4 @@
-"""NewXKY V1.0.7 desktop interface: region OCR, bank answer, 40-minute license."""
+"""NewXKY V1.0.8 desktop interface: region OCR, bank answer, 40-minute license."""
 from __future__ import annotations
 
 import json
@@ -15,7 +15,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QFont, QGuiApplication, QIcon, QImage
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPushButton, QSizePolicy,
+    QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
     QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -61,6 +61,7 @@ QPushButton#quiet { background: transparent; border: 0; color: #0b7f70; padding:
 QPushButton#quiet:hover { background: #edf8f3; }
 QPushButton#fallback { background:#fff4f2; color:#b42318; border:1px solid #f3c6c1; border-radius:8px; padding:7px 10px; font-weight:600; }
 QPushButton#fallback:hover { background:#ffe9e6; }
+QFrame#compactBar { background:transparent; border:0; }
 QPushButton#searchAction { background:#0b8c78; color:white; border:1px solid #0b8c78; border-radius:10px; padding:10px 18px; font-size:14px; font-weight:700; }
 QPushButton#searchAction:hover { background:#087f70; border-color:#087f70; }
 QPushButton#searchAction:pressed { background:#066c5f; }
@@ -266,7 +267,7 @@ class ActivationDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    """The complete V1.0.7 UI: bank, region OCR and license countdown."""
+    """The complete V1.0.8 UI: bank, region OCR and license countdown."""
 
     def __init__(self, manager: LicenseManager, bank: Bank, *, data_dir: Path | None = None,
                  app_dir: Path | None = None):
@@ -309,8 +310,9 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(f"NewXKY · 区域答题助手 V{__version__}")
         self.resize(1080, 760)
-        self.setMinimumSize(920, 650)
+        self.setMinimumSize(360, 298)
         self._build_ui()
+        self._apply_responsive_layout()
         self._load_settings()
         self.show_bank()
         self.license_tick()
@@ -329,9 +331,11 @@ class MainWindow(QMainWindow):
         outer = QHBoxLayout(root)
         outer.setContentsMargins(24, 22, 24, 22)
         outer.setSpacing(20)
+        self.outer_layout = outer
 
         sidebar = QWidget()
         sidebar.setFixedWidth(300)
+        self.sidebar = sidebar
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(0, 0, 0, 0)
         side.setSpacing(14)
@@ -381,13 +385,16 @@ class MainWindow(QMainWindow):
         outer.addWidget(sidebar)
 
         main = QVBoxLayout()
+        main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(14)
+        self.main_layout = main
         header = QHBoxLayout()
         header.setSpacing(10)
         headings = QVBoxLayout()
         headings.setSpacing(2)
         headings.addWidget(label("区域答题助手", "title"))
-        headings.addWidget(label("框选当前题目，显示本地题库中的答案", "muted"))
+        self.subtitle = label("框选当前题目，显示本地题库中的答案", "muted")
+        headings.addWidget(self.subtitle)
         header.addLayout(headings)
         header.addStretch()
         self.search_button = QPushButton("关键词搜题")
@@ -427,7 +434,23 @@ class MainWindow(QMainWindow):
         license_layout.addWidget(info_button)
         main.addWidget(license_bar)
 
+        self.compact_bar = QFrame()
+        self.compact_bar.setObjectName("compactBar")
+        compact_layout = QHBoxLayout(self.compact_bar)
+        compact_layout.setContentsMargins(0, 0, 0, 0)
+        compact_layout.setSpacing(8)
+        self.compact_select_button = QPushButton("框选 / 重选区域")
+        self.compact_select_button.clicked.connect(self.select_region)
+        compact_layout.addWidget(self.compact_select_button, 1)
+        self.compact_start_button = QPushButton("开始识别")
+        self.compact_start_button.setObjectName("primary")
+        self.compact_start_button.clicked.connect(self.toggle_monitor)
+        compact_layout.addWidget(self.compact_start_button, 1)
+        self.compact_bar.hide()
+        main.addWidget(self.compact_bar)
+
         answer_card, answer_layout = card()
+        self.answer_layout = answer_layout
         self.answer_title = label("当前题目 / 答案", "eyebrow")
         self.answer_title.setTextFormat(Qt.RichText)
         answer_layout.addWidget(self.answer_title)
@@ -453,6 +476,7 @@ class MainWindow(QMainWindow):
         main.addWidget(answer_card, 1)
 
         footer_card, footer_layout = card()
+        self.footer_card = footer_card
         footer_layout.setContentsMargins(18, 12, 18, 12)
         footer = QHBoxLayout()
         self.timing = label("题目文字变化后自动更新", "muted", True)
@@ -460,7 +484,51 @@ class MainWindow(QMainWindow):
         footer.addWidget(label("答案窗口请放在识别区域外", "version"))
         footer_layout.addLayout(footer)
         main.addWidget(footer_card)
-        outer.addLayout(main, 1)
+        main_widget = QWidget()
+        main_widget.setObjectName("mainPane")
+        main_widget.setLayout(main)
+        self.main_scroll = QScrollArea()
+        self.main_scroll.setObjectName("mainScroll")
+        self.main_scroll.setFrameShape(QFrame.NoFrame)
+        self.main_scroll.setWidgetResizable(True)
+        self.main_scroll.setWidget(main_widget)
+        outer.addWidget(self.main_scroll, 1)
+
+    def _apply_responsive_layout(self):
+        if not hasattr(self, "footer_card") or not hasattr(self, "status"):
+            return
+        width, height = self.width(), self.height()
+        compact = width < 720 or height < 430
+        narrow = width < 560
+        self.sidebar.setVisible(width >= 760)
+        self.compact_bar.setVisible(width < 760)
+        self.subtitle.setVisible(width >= 640)
+        self.status.setVisible(not narrow)
+        self.footer_card.setVisible(width >= 560 and height >= 380)
+        self.license_hint.setVisible(width >= 620 and height >= 360)
+        if narrow:
+            self.search_button.setText("搜题")
+            self.search_button.setMinimumWidth(64)
+            self.search_button.setMaximumWidth(84)
+        else:
+            self.search_button.setText("关键词搜题")
+            self.search_button.setMinimumWidth(132)
+            self.search_button.setMaximumWidth(16777215)
+        if compact:
+            self.outer_layout.setContentsMargins(10, 10, 10, 10)
+            self.outer_layout.setSpacing(8)
+            self.main_layout.setSpacing(8)
+            self.answer_layout.setContentsMargins(12, 12, 12, 12)
+        else:
+            self.outer_layout.setContentsMargins(24, 22, 24, 22)
+            self.outer_layout.setSpacing(20)
+            self.main_layout.setSpacing(14)
+            self.answer_layout.setContentsMargins(20, 18, 20, 18)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "sidebar"):
+            self._apply_responsive_layout()
 
     # ---------- bank / license ----------
 
@@ -603,8 +671,11 @@ class MainWindow(QMainWindow):
             and bool(self.bank.questions)
         )
         self.select_button.setEnabled(available and not self._selecting)
+        self.compact_select_button.setEnabled(available and not self._selecting)
         self.start_button.setEnabled(available and self.region is not None)
+        self.compact_start_button.setEnabled(available and self.region is not None)
         self.start_button.setText("暂停识别" if self.running else "开始识别")
+        self.compact_start_button.setText("暂停识别" if self.running else "开始识别")
         self.search_button.setEnabled(available)
 
     def show_search(self):

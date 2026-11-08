@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRect
-from PySide6.QtWidgets import QLabel, QPushButton, QTabWidget
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QTabWidget
 
 from newxky.keyword_search import SearchWindow
 from newxky.matching import KnowledgeIndex, Match
@@ -54,7 +54,7 @@ def test_main_window_is_simplified_and_shows_license(tmp_path):
         window.license_tick()
         texts = [button.text() for button in window.findChildren(QPushButton)]
         assert "已验证 · 剩余 39:59" in window.license_label.text()
-        assert "V1.0.7" in window.windowTitle()
+        assert "V1.0.8" in window.windowTitle()
         assert window.bank_count.text() == "1"
         assert not window.findChildren(QTabWidget)
         assert not any("导入" in text or "自动答题" in text or "人员" in text for text in texts)
@@ -64,6 +64,32 @@ def test_main_window_is_simplified_and_shows_license(tmp_path):
         assert window.select_button.isEnabled()
         assert not window.start_button.isEnabled()
         assert window.renew_button.isHidden()
+    finally:
+        window.close()
+
+
+def test_main_window_can_shrink_to_360_by_298_and_restore(tmp_path):
+    manager = FakeManager()
+    window = MainWindow(manager, bank(), data_dir=tmp_path, app_dir=tmp_path)
+    try:
+        window.show()
+        window.resize(360, 298)
+        QApplication.processEvents()
+        assert window.size().width() == 360
+        assert window.size().height() == 298
+        assert not window.sidebar.isVisible()
+        assert window.compact_bar.isVisible()
+        assert window.compact_select_button.isVisible()
+        assert window.compact_start_button.isVisible()
+        assert not window.status.isVisible()
+        assert not window.subtitle.isVisible()
+        assert window.search_button.text() == "搜题"
+        window.resize(1080, 760)
+        QApplication.processEvents()
+        assert window.sidebar.isVisible()
+        assert not window.compact_bar.isVisible()
+        assert window.status.isVisible()
+        assert window.search_button.text() == "关键词搜题"
     finally:
         window.close()
 

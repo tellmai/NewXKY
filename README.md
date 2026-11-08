@@ -1,9 +1,9 @@
-# NewXKY 区域答题助手 V1.0.7
+# NewXKY 区域答题助手 V1.0.8
 
 Windows 本地桌面程序。框选屏幕中的一道题，程序用本机 OCR 识别题干和选项，在内置题库中匹配正确答案。**不自动答题、不连接浏览器、不操作鼠标、不导入 PDF。**
 
 当前正式授权服务：`https://license.newxky-license.com`  
-正式免安装包：`dist\NewXKY-V1.0.7-Portable.zip`
+正式免安装包：`dist\NewXKY-V1.0.8-Portable.zip`
 
 ## 功能
 
@@ -54,7 +54,7 @@ Windows 本地桌面程序。框选屏幕中的一道题，程序用本机 OCR �
 
 主界面“软件说明”按钮显示当前版本、授权状态和剩余时间：
 
-- 版本：V1.0.7
+- 版本：V1.0.8
 - 状态：已验证 / 离线续用 / 授权已到期
 - 剩余时间：40 分钟倒计时
 - 隐私：截图、OCR 和题库匹配均在本机完成，不上传网络。
@@ -77,7 +77,7 @@ $env:NEWXKY_LICENSE_SERVER = 'http://127.0.0.1:8787'
 .\.venv\Scripts\python.exe main.py
 ```
 
-## 构建 V1.0.7 免安装包
+## 构建 V1.0.8 免安装包
 
 拿到公网 HTTPS 地址后，可以一步完成“写入地址 → 构建 → 免安装 ZIP → 服务端部署 ZIP”：
 
@@ -120,8 +120,8 @@ powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -LicenseServer http
 输出：
 
 ```text
-dist\NewXKY-V1.0.7-Portable.zip
-dist\NewXKY-V1.0.7-Portable.zip.sha256
+dist\NewXKY-V1.0.8-Portable.zip
+dist\NewXKY-V1.0.8-Portable.zip.sha256
 ```
 
 包内只包含程序、运行库、OCR 模型和 `题库/default-bank.json`，不包含 PDF、人员资料、授权码或本机 `data`。
@@ -132,7 +132,7 @@ dist\NewXKY-V1.0.7-Portable.zip.sha256
 .\.venv\Scripts\python.exe scripts\package_server.py
 ```
 
-输出 `dist\NewXKY-LicenseServer-V1.0.7.zip`，上传服务器后按 [`license_server/README.md`](license_server/README.md) 配置 systemd 和 Caddy。
+输出 `dist\NewXKY-LicenseServer-V1.0.8.zip`，上传服务器后按 [`license_server/README.md`](license_server/README.md) 配置 systemd 和 Caddy。
 
 > 正式包必须填入公网 HTTPS 地址后重新构建；未配置地址时打包脚本会拒绝生成正式 ZIP。
 
@@ -141,7 +141,7 @@ dist\NewXKY-V1.0.7-Portable.zip.sha256
 如果没有公网授权地址，可以使用：
 
 ```text
-dist\NewXKY-V1.0.7-WindowsTest.zip
+dist\NewXKY-V1.0.8-WindowsTest.zip
 ```
 
 解压后双击 `启动测试版.cmd`，它会先启动随包的 `NewXKY-TestLicenseServer.exe`，再启动软件。验证码在 `test-license\测试验证码.txt`，共 5 个，每个只能激活一台电脑、可用 40 分钟。此包仅用于功能验收，不能作为正式分发包；正式分发必须使用公网 HTTPS 授权服务。

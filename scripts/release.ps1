@@ -28,5 +28,5 @@ if ($LASTEXITCODE -ne 0) { throw '免安装包生成失败' }
 if ($LASTEXITCODE -ne 0) { throw '服务端包生成失败' }
 
 Write-Output 'RELEASE_READY'
-Get-ChildItem (Join-Path $projectRoot 'dist\NewXKY-V1.0.7-Portable.zip*')
-Get-ChildItem (Join-Path $projectRoot 'dist\NewXKY-LicenseServer-V1.0.7.zip*')
+Get-ChildItem (Join-Path $projectRoot 'dist\NewXKY-V1.0.8-Portable.zip*')
+Get-ChildItem (Join-Path $projectRoot 'dist\NewXKY-LicenseServer-V1.0.8.zip*')
