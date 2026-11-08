@@ -5,4 +5,4 @@ service. Keep this value empty in source control; a packaged application with
 an empty value cannot activate and shows a configuration error instead.
 """
 
-LICENSE_SERVER_URL = ""  # Set to the public HTTPS address before building a release.
+LICENSE_SERVER_URL = 'https://license.newxky-license.com'  # Set to the public HTTPS address before building a release.
