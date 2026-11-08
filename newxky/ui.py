@@ -1,4 +1,4 @@
-"""NewXKY V1.0.0 desktop interface: region OCR, bank answer, 40-minute license."""
+"""NewXKY V1.0.7 desktop interface: region OCR, bank answer, 40-minute license."""
 from __future__ import annotations
 
 import json
@@ -262,7 +262,7 @@ class ActivationDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    """The complete V1.0.0 UI: bank, region OCR and license countdown."""
+    """The complete V1.0.7 UI: bank, region OCR and license countdown."""
 
     def __init__(self, manager: LicenseManager, bank: Bank, *, data_dir: Path | None = None,
                  app_dir: Path | None = None):
@@ -276,6 +276,7 @@ class MainWindow(QMainWindow):
         self.tracker = FrameTracker()
         self.region: QRect | None = None
         self.running = False
+        self._selecting = False
         self._closing = False
         self._jobs: set[Worker] = set()
         self._selectors: list[RegionSelector] = []
@@ -404,7 +405,7 @@ class MainWindow(QMainWindow):
         self.license_label = label("尚未验证", "licenseBadge")
         license_layout.addWidget(self.license_label)
         self.license_hint = label(
-            "验证码只能激活一台电脑；40 分钟内可关闭后重新打开，到期后验证码失效。",
+            "软件授权已生效。有效期内可随时开关，倒计时不暂停。",
             "muted", True,
         )
         license_layout.addWidget(self.license_hint, 1)
@@ -476,9 +477,7 @@ class MainWindow(QMainWindow):
             "background:#e8f5f1;color:#087c68;padding:7px 12px;border-radius:9px;font-weight:700;"
         )
         if not self._offline:
-            self.license_hint.setText(
-                "同一台电脑在剩余时间内可以关闭后重新打开；到期后该验证码永久失效。"
-            )
+            self.license_hint.setText("软件授权已生效。有效期内可随时开关，倒计时不暂停。")
         self.manager.touch()
         if not self._license_refresh_busy and time.monotonic() - self._last_refresh >= 60:
             self.start_license_refresh()
@@ -506,9 +505,7 @@ class MainWindow(QMainWindow):
         ok, payload = result
         if ok:
             self._offline = False
-            self.license_hint.setText(
-                "授权服务器已确认。同一台电脑在剩余时间内可以关闭后重新打开；到期后该验证码永久失效。"
-            )
+            self.license_hint.setText("软件授权已生效。有效期内可随时开关，倒计时不暂停。")
             return
         code, message = payload
         if code in {"expired", "already_used", "invalid_code", "disabled", "machine_mismatch"}:
@@ -593,7 +590,7 @@ class MainWindow(QMainWindow):
             and self.manager.can_use
             and bool(self.bank.questions)
         )
-        self.select_button.setEnabled(available)
+        self.select_button.setEnabled(available and not self._selecting)
         self.start_button.setEnabled(available and self.region is not None)
         self.start_button.setText("暂停识别" if self.running else "开始识别")
         self.search_button.setEnabled(available)
@@ -612,33 +609,52 @@ class MainWindow(QMainWindow):
         self.search_window.query.setFocus()
 
     def select_region(self):
+        if self._selecting:
+            return
         if not self.manager.can_use:
             self.license_expired("授权已到期，请输入新的验证码。")
             return
+        self._selecting = True
         self.stop_monitor("正在选择区域")
         self.hide()
         self.border.hide()
+        self._discard_selectors()
         QTimer.singleShot(250, self._open_selectors)
 
-    def _open_selectors(self):
-        self._selectors = [RegionSelector(screen) for screen in QGuiApplication.screens()]
-        for selector in self._selectors:
-            selector.selected.connect(self.region_selected)
-            selector.cancelled.connect(self.cancel_selection)
-            selector.show()
-        if self._selectors:
-            self._selectors[0].activateWindow()
-
-    def _close_selectors(self):
+    def _discard_selectors(self):
         for selector in self._selectors:
             selector.close()
             selector.deleteLater()
         self._selectors.clear()
-        self.show()
-        self.activateWindow()
+
+    def _open_selectors(self):
+        if self._closing:
+            self._selecting = False
+            return
+        self._discard_selectors()
+        self._selectors = [RegionSelector(screen) for screen in QGuiApplication.screens()]
+        if not self._selectors:
+            self._selecting = False
+            self.cancel_selection()
+            return
+        for selector in self._selectors:
+            selector.selected.connect(self.region_selected)
+            selector.cancelled.connect(self.cancel_selection)
+            selector.show()
+        self._selectors[0].activateWindow()
+
+    def _close_selectors(self):
+        self._discard_selectors()
+        self._selecting = False
+        if not self._closing:
+            self.show()
+            self.activateWindow()
 
     def region_selected(self, rect):
+        if self._closing:
+            return
         self.region = QRect(rect)
+        self._selecting = False
         self._close_selectors()
         self.region_info.setText(
             f"已选择区域\n位置 {rect.x()}, {rect.y()} · 大小 {rect.width()} × {rect.height()}"
@@ -650,13 +666,19 @@ class MainWindow(QMainWindow):
         self.refresh_controls()
 
     def cancel_selection(self):
+        if self._closing:
+            return
+        self._selecting = False
         self._close_selectors()
         self.update_border()
         self.status.setText("已取消框选")
 
     def update_border(self):
+        if self.region is not None:
+            self.border.set_region(self.region)
         self.border.setVisible(
             self.region is not None
+            and not self._selecting
             and not self._selectors
             and not self._closing
             and not self._license_locked
@@ -882,13 +904,13 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self._closing = True
+        self._selecting = False
         self.timer.stop()
         self.license_timer.stop()
         self.running = False
         self.tracker.invalidate()
-        for selector in self._selectors:
-            selector.close()
-        self._selectors.clear()
+        self._discard_selectors()
+        self.border.hide()
         self.border.close()
         if self.search_window is not None:
             self.search_window.close()

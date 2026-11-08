@@ -54,12 +54,13 @@ def test_main_window_is_simplified_and_shows_license(tmp_path):
         window.license_tick()
         texts = [button.text() for button in window.findChildren(QPushButton)]
         assert "已验证 · 剩余 39:59" in window.license_label.text()
-        assert "V1.0.0" in window.windowTitle()
+        assert "V1.0.7" in window.windowTitle()
         assert window.bank_count.text() == "1"
         assert not window.findChildren(QTabWidget)
         assert not any("导入" in text or "自动答题" in text or "人员" in text for text in texts)
         assert window.search_button.text() == "关键词搜题"
         assert window.search_button.isEnabled()
+        assert window.license_hint.text() == "软件授权已生效。有效期内可随时开关，倒计时不暂停。"
         assert window.select_button.isEnabled()
         assert not window.start_button.isEnabled()
         assert window.renew_button.isHidden()
@@ -133,3 +134,29 @@ def test_keyword_search_window_shows_source_label():
         assert "来源：2026知识库" in dialog.detail.toPlainText()
     finally:
         dialog.close()
+
+
+def test_reselect_region_replaces_previous_region(tmp_path):
+    manager = FakeManager()
+    window = MainWindow(manager, bank(), data_dir=tmp_path, app_dir=tmp_path)
+    try:
+        window.region = QRect(0, 0, 300, 200)
+        window.region_selected(QRect(10, 20, 500, 300))
+        assert window.region == QRect(10, 20, 500, 300)
+        window.region_selected(QRect(30, 40, 640, 420))
+        assert window.region == QRect(30, 40, 640, 420)
+        assert "位置 30, 40" in window.region_info.text()
+        assert not window._selecting
+    finally:
+        window.close()
+
+
+def test_close_hides_region_border(tmp_path):
+    manager = FakeManager()
+    window = MainWindow(manager, bank(), data_dir=tmp_path, app_dir=tmp_path)
+    window.region = QRect(0, 0, 500, 300)
+    window.update_border()
+    window.border.show()
+    assert window.border.isVisible()
+    window.close()
+    assert not window.border.isVisible()

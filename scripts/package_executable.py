@@ -64,7 +64,7 @@ def main() -> int:
     shutil.copy2(ROOT / "README.md", app / "使用说明.md")
     shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", app / "THIRD_PARTY_NOTICES.md")
     (app / "使用说明.txt").write_text(
-        "NewXKY 区域答题助手 V1.0.0 免安装版\n\n"
+        "NewXKY 区域答题助手 V1.0.7 免安装版\n\n"
         "1. 将整个 ZIP 解压到普通文件夹，双击 NewXKY.exe；不要只复制 exe。\n"
         "2. 首次启动输入软件验证码。每个验证码只能激活一台电脑，可用 40 分钟。\n"
         "3. 40 分钟内关闭软件后可以重新打开；到期后该验证码失效，需要新的验证码。\n"

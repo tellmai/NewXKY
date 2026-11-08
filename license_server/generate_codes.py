@@ -95,7 +95,7 @@ def main() -> int:
     manifest = {
         "format": 1,
         "product": "NewXKY",
-        "version": "1.0.0",
+        "version": "1.0.7",
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "total": args.count,
         "files": [],
