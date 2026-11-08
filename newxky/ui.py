@@ -57,6 +57,29 @@ QPushButton#primary:hover { background: #066c5f; }
 QPushButton#primary:disabled { background: #b1c9c4; border-color: #b1c9c4; }
 QPushButton#quiet { background: transparent; border: 0; color: #0b7f70; padding: 6px 8px; }
 QPushButton#quiet:hover { background: #edf8f3; }
+QPushButton#searchAction { background:#0b8c78; color:white; border:1px solid #0b8c78; border-radius:10px; padding:10px 18px; font-size:14px; font-weight:700; }
+QPushButton#searchAction:hover { background:#087f70; border-color:#087f70; }
+QPushButton#searchAction:pressed { background:#066c5f; }
+QDialog#searchDialog { background:#eef5f2; }
+QFrame#searchHero { background:qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #e7f6ef, stop:1 #f8fcfb); border:1px solid #cfe7dc; border-radius:16px; }
+QLabel#searchHeroIcon { background:#0b8c78; color:white; border-radius:12px; font-size:25px; font-weight:700; }
+QLabel#searchTitle { font-size:25px; font-weight:700; color:#102a43; }
+QLabel#searchSubtitle { color:#5b7183; font-size:13px; }
+QLabel#searchSourceChip { background:white; color:#087c68; border:1px solid #bfe3d7; border-radius:10px; padding:7px 11px; font-weight:600; }
+QFrame#searchBarCard { background:white; border:1px solid #d7e7df; border-radius:12px; }
+QLineEdit#searchInput { background:transparent; border:0; padding:7px 4px; font-size:15px; }
+QPushButton#searchButton { background:#0b8c78; color:white; border:0; border-radius:8px; padding:10px 24px; font-weight:700; }
+QPushButton#searchButton:hover { background:#087f70; }
+QLabel#searchCount { background:#eaf7f1; color:#087c68; border-radius:8px; padding:6px 10px; font-weight:600; }
+QLabel#searchHint { color:#7b8d9c; font-size:12px; }
+QFrame#searchPanel { background:white; border:1px solid #dfe9e4; border-radius:12px; }
+QLabel#searchPanelTitle { color:#102a43; font-weight:700; font-size:14px; }
+QTableWidget#searchResults { border:0; background:white; alternate-background-color:#f7fbf9; gridline-color:transparent; }
+QTableWidget#searchResults::item { padding:7px; border-bottom:1px solid #edf2ef; }
+QTableWidget#searchResults::item:selected { background:#dff1ea; color:#0b4f45; }
+QTableWidget#searchResults QHeaderView::section { background:#f1f8f5; color:#526b60; border:0; border-bottom:1px solid #dfe9e4; padding:9px 8px; font-weight:600; }
+QTextEdit#searchDetail { background:#fbfdfc; border:0; padding:10px; selection-background-color:#d7ede7; }
+QSplitter::handle { background:transparent; height:10px; }
 QTextEdit, QLineEdit { background: white; border: 1px solid #e0e7ef; border-radius: 8px; padding: 8px; selection-background-color: #d7ede7; }
 QTextEdit#answerDetail { border: 0; padding: 0; background: white; font-size: 14px; }
 QScrollArea { border: 0; background: transparent; }
@@ -352,12 +375,21 @@ class MainWindow(QMainWindow):
         main = QVBoxLayout()
         main.setSpacing(14)
         header = QHBoxLayout()
+        header.setSpacing(10)
         headings = QVBoxLayout()
         headings.setSpacing(2)
         headings.addWidget(label("区域答题助手", "title"))
         headings.addWidget(label("框选当前题目，显示本地题库中的答案", "muted"))
         header.addLayout(headings)
         header.addStretch()
+        self.search_button = QPushButton("关键词搜题")
+        self.search_button.setObjectName("searchAction")
+        self.search_button.setShortcut("Ctrl+F")
+        self.search_button.setToolTip("在 2026知识库 中搜索题干或选项（Ctrl+F）")
+        self.search_button.setMinimumHeight(40)
+        self.search_button.setMinimumWidth(132)
+        self.search_button.clicked.connect(self.show_search)
+        header.addWidget(self.search_button, 0, Qt.AlignTop)
         self.status = label("准备就绪", "status")
         self.status.setMinimumWidth(130)
         self.status.setAlignment(Qt.AlignCenter)
@@ -381,12 +413,6 @@ class MainWindow(QMainWindow):
         self.renew_button.clicked.connect(self.renew_license)
         self.renew_button.hide()
         license_layout.addWidget(self.renew_button)
-        self.search_button = QPushButton("关键词搜题")
-        self.search_button.setObjectName("quiet")
-        self.search_button.setShortcut("Ctrl+F")
-        self.search_button.setToolTip("在 2026知识库 中搜索题干或选项（Ctrl+F）")
-        self.search_button.clicked.connect(self.show_search)
-        license_layout.addWidget(self.search_button)
         info_button = QPushButton("软件说明")
         info_button.setObjectName("quiet")
         info_button.clicked.connect(self.show_software_info)
