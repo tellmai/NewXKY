@@ -157,19 +157,74 @@ class KnowledgeIndex:
             for j in range(len(stem) - 1):
                 self.by_gram[stem[j:j + 2]].add(i)
 
-    def search(self, query: str) -> list[Question]:
-        """Find all keywords in the stored stem or option contents."""
-        terms = [value for word in query.split() if (value := normalized(word))]
-        if not terms:
+    @staticmethod
+    def _grams(text: str) -> set[str]:
+        return {text[index:index + 2] for index in range(max(0, len(text) - 1))}
+
+    def search(self, query: str, limit: int = 200) -> list[Question]:
+        """Search stems and option contents; all space-separated terms must occur."""
+        terms = [value for word in str(query or "").split() if (value := normalized(word))]
+        if not terms or not self.questions:
             return []
-        matches = [i for i, fields in enumerate(self.search_fields)
-                   if all(any(term in field for field in fields) for term in terms)]
-        matches.sort(key=lambda i: -sum(term in self.stems[i] for term in terms))
-        return [self.questions[i] for i in matches]
+        matches = []
+        for i, fields in enumerate(self.search_fields):
+            if all(any(term in field for field in fields) for term in terms):
+                stem_hits = sum(term in self.stems[i] for term in terms)
+                matches.append((stem_hits, i))
+        matches.sort(key=lambda item: (-item[0], item[1]))
+        return [self.questions[i] for _, i in matches[:limit]]
+
+    def find_candidates(self, text: str, limit: int = 5) -> list[tuple[Question, float]]:
+        """Rank near matches when exact verification is impossible.
+
+        This is deliberately a reference search: it uses visible stem/option
+        content, character bigrams and sequence similarity, never a guessed
+        answer from the question number alone.
+        """
+        if not self.questions or not str(text).strip():
+            return []
+        stem_text, options = screen_parts(text)
+        stem = normalized(clean_stem(stem_text))
+        whole = normalized(text)
+        if not whole:
+            return []
+        visible = [normalized(value) for value in options.values() if normalized(value)]
+        text_grams = self._grams(whole)
+        counts = defaultdict(int)
+        for gram in text_grams:
+            for i in self.by_gram.get(gram, ()):
+                counts[i] += 1
+        shortlist = sorted(counts, key=counts.get, reverse=True)[:48]
+        if not shortlist:
+            shortlist = range(len(self.questions))
+        scored = []
+        for i in shortlist:
+            bank_stem = self.stems[i]
+            if not bank_stem:
+                continue
+            stem_ratio = SequenceMatcher(None, stem or whole, bank_stem, autojunk=False).ratio()
+            bank_grams = self._grams(bank_stem)
+            shared = len(text_grams & bank_grams)
+            bank_coverage = shared / max(1, len(bank_grams))
+            text_coverage = shared / max(1, len(text_grams))
+            option_score = 0.0
+            if visible:
+                bank_values = [normalized(value) for value in self.questions[i].options.values()]
+                ratios = []
+                for value in visible:
+                    ratios.append(max(SequenceMatcher(None, value, old, autojunk=False).ratio()
+                                      for old in bank_values))
+                option_score = sum(ratios) / len(ratios)
+            score = (.55 * stem_ratio + .20 * bank_coverage + .15 * text_coverage
+                     + .10 * option_score)
+            if score >= .35:
+                scored.append((score, i))
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        return [(self.questions[i], score) for score, i in scored[:limit]]
 
     def lookup(self, text: str) -> Match:
         if not self.questions:
-            return Match("empty", "请先导入 PDF 题库")
+            return Match("empty", "题库未加载，请重新解压完整的软件安装包")
         if not text.strip():
             return Match("unreadable", "未识别到文字，请检查区域是否包含完整题目")
         stem_text, options = screen_parts(text)
@@ -254,17 +309,23 @@ class KnowledgeIndex:
                        if recovered else "题干已匹配；网页选项未完整核对，以下字母和内容按题库顺序显示")
             return Match("reference", message, q, q.answers, q.options, 1)
         # Similar questions stay explicit references, not verified current answers.
-        counts = defaultdict(int)
-        for gram in {stem[j:j + 2] for j in range(len(stem) - 1)}:
-            for i in self.by_gram.get(gram, ()):
-                counts[i] += 1
-        candidates = sorted(counts, key=counts.get, reverse=True)[:12]
-        best, score = None, 0.0
-        for i in candidates:
-            key = self.stems[i]
-            value = SequenceMatcher(None, stem, key, autojunk=False).ratio()
-            if value > score:
-                best, score = i, value
-        if best is not None and score >= .75:
-            return Match("candidate", "未完全匹配：以下为相似题的题库答案，仅供参考；请核对题干差异。", self.questions[best], score=score)
-        return Match("missing", "题库中未找到完整匹配，请检查题库和框选范围")
+        # First retain the conservative high-confidence candidate, then use a
+        # keyword/bigram retrieval fallback so an OCR typo or a missing option
+        # still shows the most relevant bank answer with a clear warning.
+        fallback = self.find_candidates(text, 4)
+        if fallback:
+            best_question, best_score = fallback[0]
+            if best_score >= .75:
+                return Match(
+                    "candidate",
+                    "未完全匹配：以下为相似题的题库答案，仅供参考；请核对题干差异。",
+                    best_question, score=best_score,
+                )
+            if best_score >= .45:
+                return Match(
+                    "candidate",
+                    "未精确匹配：已按关键词在 2026知识库 中检索到最相近题目，"
+                    "以下答案仅供参考；请核对题干和选项差异。",
+                    best_question, score=best_score,
+                )
+        return Match("missing", "2026知识库 中未找到匹配题目；可点击“关键词搜题”手动检索")

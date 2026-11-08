@@ -1,6 +1,6 @@
 import pytest
 
-from newxky.bank import merge_banks, parse_lines, read_bank, save_bank
+from newxky.bank import read_bank, save_bank
 from newxky.matching import KnowledgeIndex
 from newxky.models import Bank, Question
 from newxky.monitor import FrameTracker
@@ -8,41 +8,26 @@ from newxky.ocr import text_from_rows
 
 
 def question(stem="下列哪一项属于依法行政的要求（）", answer=("B",)):
-    return Question(1, "单选", stem, {"A": "任意扩大权限", "B": "依照法定权限和程序履行职责", "C": "以个人意见代替法律", "D": "不接受监督"}, answer, (1, 2), "题库.pdf")
+    return Question(
+        1, "单选", stem,
+        {"A": "任意扩大权限", "B": "依照法定权限和程序履行职责",
+         "C": "以个人意见代替法律", "D": "不接受监督"},
+        answer, (1, 2), "题库.pdf",
+    )
 
 
 def screen(q, order=("A", "B", "C", "D")):
-    return "单选题\n1. " + q.stem + "\n" + "\n".join(f"{letter}. {q.options[old]}" for letter, old in zip("ABCD", order))
+    return "单选题\n1. " + q.stem + "\n" + "\n".join(
+        f"{letter}. {q.options[old]}" for letter, old in zip("ABCD", order)
+    )
 
 
-def test_pdf_cross_page_and_section_numbers():
-    lines = [(1, "2026 年度法治理论知识考试复习资料"), (1, "一、单选题"), (1, "1、题干第一行"), (2, "题干第二行"),
-             (2, "A. 甲"), (2, "B. 乙"), (2, "正确答案：B"), (2, "二、多选题"), (2, "1、另一道题"),
-             (2, "A. 丙"), (2, "B. 丁"), (2, "正确答案：A、B")]
-    bank = parse_lines(lines, 2, "中文.pdf")
-    assert not bank.issues
-    assert [q.kind for q in bank.questions] == ["单选", "多选"]
-    assert bank.questions[0].stem == "题干第一行题干第二行"
-    assert bank.questions[0].pages == (1, 2)
-    assert bank.questions[1].answers == ("A", "B")
-
-
-def test_invalid_answers_are_reported_and_not_added():
-    bank = parse_lines([(1, x) for x in ["1、缺答案", "A. 甲", "B. 乙", "2、答案不存在", "A. 甲", "正确答案：D"]], 1)
-    assert len(bank.issues) == 2
-    assert bank.questions == []
-
-
-def test_storage_and_conflicting_import_is_transactional(tmp_path):
-    q = question()
+def test_json_bank_storage_round_trip(tmp_path):
     path = tmp_path / "bank.json"
-    old = Bank([q], sources=["题库.pdf"], page_count=2)
+    old = Bank([question()], sources=["题库.pdf"], page_count=2)
     save_bank(old, path)
     assert read_bank(path) == old
-    assert merge_banks([old, old]).duplicates == 1
-    with pytest.raises(ValueError, match="答案冲突"):
-        merge_banks([old, Bank([question(answer=("A",))])])
-    assert read_bank(path) == old
+    assert read_bank(tmp_path / "missing.json").questions == []
 
 
 def test_shuffled_options_use_screen_letters():
@@ -109,6 +94,19 @@ def test_unknown_and_empty_region_never_yield_answer():
     index = KnowledgeIndex([question()])
     assert index.lookup("").status == "unreadable"
     assert index.lookup("一道没有收录的题目").status == "missing"
+
+
+def test_fuzzy_retrieval_returns_a_warned_candidate_for_an_ocr_typo():
+    q = question()
+    result = KnowledgeIndex([q]).lookup(screen(q).replace("依法行政", "依去行政"))
+    assert result.status == "candidate"
+    assert result.question is q
+    assert "仅供参考" in result.message
+
+
+def test_find_candidates_does_not_invent_an_answer_for_unrelated_text():
+    q = question()
+    assert KnowledgeIndex([q]).find_candidates("完全无关的另一道题") == []
 
 
 def test_extra_leading_negation_is_not_discarded_as_a_header():

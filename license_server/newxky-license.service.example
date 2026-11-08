@@ -1,0 +1,17 @@
+[Unit]
+Description=NewXKY license service
+After=network.target
+
+[Service]
+WorkingDirectory=/opt/newxky
+Environment=NEWXKY_LICENSE_DB=/opt/newxky/license_server/data/licenses.db
+Environment=NEWXKY_LICENSE_HOST=127.0.0.1
+Environment=NEWXKY_LICENSE_PORT=8787
+Environment=NEWXKY_TRUST_PROXY=1
+Environment=NEWXKY_ADMIN_TOKEN=请替换成长随机字符串
+ExecStart=/usr/bin/python3 -m license_server.server
+Restart=always
+User=newxky
+
+[Install]
+WantedBy=multi-user.target

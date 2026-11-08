@@ -3,7 +3,7 @@ chcp 65001 >nul
 cd /d "%~dp0"
 py -3 -m venv .venv
 if errorlevel 1 goto failed
-".venv\Scripts\python.exe" -m pip install -r requirements.txt
+".venv\Scripts\python.exe" -m pip install -r requirements-dev.txt
 if errorlevel 1 goto failed
 echo 安装完成，请运行“启动软件.cmd”。
 pause

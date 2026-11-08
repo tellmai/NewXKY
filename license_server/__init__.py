@@ -1,0 +1,1 @@
+"""NewXKY license service package."""

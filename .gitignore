@@ -6,7 +6,11 @@ dist/
 runtime/
 data/
 人员记录/
-题库/
+人员结果/
+题库/*
+!题库/default-bank.json
+!题库/manifest.json
+license_server/data/
 tmp/
 *.log
 .env

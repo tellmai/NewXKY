@@ -31,8 +31,8 @@ class RegionSelector(QWidget):
             painter.drawRect(self._selection.adjusted(0, 0, -1, -1))
         painter.setFont(QFont("Microsoft YaHei UI", 13))
         painter.setPen(QColor("white"))
-        painter.drawText(QRect(24, 24, self.width() - 48, 100), Qt.TextWordWrap,
-                         "拖动框选题干和选项；自动答题还需框入底部上一题 / 下一题 / 提交按钮\n请避开计时器及答案窗口 · Esc / 右键取消 · 区域限于一块显示器")
+        painter.drawText(QRect(24, 24, self.width() - 48, 40), Qt.TextWordWrap,
+                         "拖动框选题干和全部选项 · Esc / 右键取消")
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:

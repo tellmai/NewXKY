@@ -1,18 +1,15 @@
 # 第三方组件
 
-PDF 解析、题库内容匹配、OCR 行重建、浏览器发现、人员导入及考试登录流程参考本机 Answering-S 项目；NewXKY 为独立桌面程序，不依赖其运行目录。
+NewXKY V1.0.0 为独立桌面程序。区域 OCR、题库匹配和激活计时都在本机完成；授权服务端仅使用 Python 标准库。第三方组件：
 
 - PySide6 Essentials / Qt for Python：LGPLv3 / GPLv3 / 商业许可，https://doc.qt.io/qtforpython-6/licenses.html
-- pdfplumber：MIT，https://github.com/jsvine/pdfplumber
-- pdfminer.six：MIT，https://github.com/pdfminer/pdfminer.six
-- RapidOCR 及随附模型：Apache-2.0，https://github.com/RapidAI/RapidOCR
+- RapidOCR 及随附 OCR 模型：Apache-2.0，https://github.com/RapidAI/RapidOCR
 - ONNX Runtime：MIT，https://github.com/microsoft/onnxruntime
 - OpenCV：Apache-2.0，https://github.com/opencv/opencv
 - Pillow：HPND，https://github.com/python-pillow/Pillow
-- Playwright：Apache-2.0，https://github.com/microsoft/playwright-python
-- openpyxl：MIT，https://openpyxl.readthedocs.io/
-- ddddocr：MIT，https://github.com/sml2h3/ddddocr
-- websockets：BSD-3-Clause，https://github.com/python-websockets/websockets
+- NumPy：BSD-3-Clause，https://numpy.org/
 - PyInstaller：GPL 及分发例外，https://pyinstaller.org/en/stable/license.html
+- pdfplumber（仅题库构建工具，不随客户端打包）：MIT，https://github.com/jsvine/pdfplumber
+- openpyxl（仅验证码生成/分发工具，不随客户端打包）：MIT，https://openpyxl.readthedocs.io/
 
 分发时请保留运行库中的许可文件，并遵守各依赖的许可要求。
