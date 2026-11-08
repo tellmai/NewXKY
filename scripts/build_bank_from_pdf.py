@@ -146,7 +146,7 @@ def load_pdf(path: Path) -> Bank:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("pdf", type=Path, nargs="?", default=ROOT / "题库" / "2026考试复习资料.pdf")
+    parser.add_argument("pdf", type=Path, nargs="?", default=ROOT / "题库" / "2026年度知识考试复习资料.pdf")
     parser.add_argument("--output", type=Path, default=ROOT / "题库" / "default-bank.json")
     args = parser.parse_args()
     pdf = args.pdf.resolve()

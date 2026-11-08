@@ -59,11 +59,12 @@ def test_incomplete_options_use_the_visible_correct_answer_letter():
     assert result.options["B"] == q.options["B"]
 
 
-def test_incomplete_options_keep_bank_reference_when_correct_content_is_missing():
+def test_incomplete_options_wait_for_scroll_when_correct_content_is_missing():
     q = question(answer=("D",))
     text = screen(q)
     result = KnowledgeIndex([q]).lookup(text[:text.rfind("\nD.")])
-    assert result.status == "reference" and result.answers == ("D",)
+    assert result.status == "incomplete" and not result.answers
+    assert "滚动" in result.message
 
 
 def test_complete_changed_options_do_not_fall_back_to_bank_letters():
@@ -72,11 +73,11 @@ def test_complete_changed_options_do_not_fall_back_to_bank_letters():
     assert result.status == "unverified" and not result.answers
 
 
-def test_stem_only_shows_bank_answers_and_contents():
+def test_stem_only_waits_for_options_before_bank_fallback():
     q = question(answer=("A", "C"))
     result = KnowledgeIndex([q]).lookup(q.stem)
-    assert result.status == "reference" and result.answers == ("A", "C")
-    assert result.options["C"] == q.options["C"]
+    assert result.status == "incomplete" and not result.answers
+    assert "滚动" in result.message
 
 
 def test_partial_question_with_conflicting_answers_stays_ambiguous():

@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "pdf": "2026考试复习资料.pdf",
-  "pdf_sha256": "41c7656444c782c88661e183d645359baf518085d5ea6f8c234e75539704df3f",
-  "cache_sha256": "082968358f2d458b907e1ef44d8713383b6a1a75a042ac683968e9770df2e7bd",
-  "questions": 1288,
+  "pdf": "2026年度知识考试复习资料.pdf",
+  "pdf_sha256": "2d236666c1f063a9834cd163b32e416c5ddcd5023b95040631b7ef9b34dc7eb6",
+  "cache_sha256": "496438077a20dae332c2c39ac59dee6a894c59baf7fef63c2a4c10e88954b59a",
+  "questions": 1291,
   "pages": 349,
   "duplicates": 0,
-  "issues": 3,
+  "issues": 0,
   "source_label": "2026知识库"
 }

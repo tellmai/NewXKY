@@ -4,7 +4,7 @@ from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QLabel, QPushButton, QTabWidget
 
 from newxky.keyword_search import SearchWindow
-from newxky.matching import KnowledgeIndex
+from newxky.matching import KnowledgeIndex, Match
 from newxky.models import Bank, Question
 from newxky.ui import ActivationDialog, MainWindow
 
@@ -161,3 +161,59 @@ def test_close_hides_region_border(tmp_path):
     assert window.border.isVisible()
     window.close()
     assert not window.border.isVisible()
+
+
+def test_incomplete_options_prompt_scroll_and_offer_red_bank_fallback(tmp_path):
+    manager = FakeManager()
+    window = MainWindow(manager, bank(), data_dir=tmp_path, app_dir=tmp_path)
+    try:
+        window.show()
+        window.running = True
+        question = window.bank.questions[0]
+        match = Match(
+            "incomplete",
+            "当前画面只识别到 2/4 个选项，答案可能在未显示的选项里。请向下滚动考试页面。",
+            question, options={"A": question.options["A"], "B": question.options["B"]}, score=1,
+        )
+        window.tracker.observe(b"frame", 0)
+        revision = window.tracker.begin()
+        window.recognized(revision, ("识别文字", match, .1))
+        assert window.status.text() == "等待完整选项"
+        assert window.answer.text() == "待核对"
+        assert "滚动" in window.message.text()
+        assert window.bank_fallback_button.isVisible()
+        window.bank_fallback_button.click()
+        assert window.status.text() == "题库顺序参考"
+        assert "color:#c62828" in window.answer.styleSheet()
+        assert window.answer.text() == " / ".join(question.answers)
+        assert window.bank_fallback_button.isHidden()
+    finally:
+        window.close()
+
+
+def test_scrolled_lower_options_merge_with_cached_upper_options(tmp_path):
+    manager = FakeManager()
+    question = Question(
+        1, "单选", "跨屏题目（）",
+        {"A": "选项甲", "B": "选项乙", "C": "选项丙", "D": "选项丁"},
+        ("B",), (1,), "题库.pdf",
+    )
+    window = MainWindow(manager, Bank([question], sources=["题库.pdf"], page_count=1),
+                        data_dir=tmp_path, app_dir=tmp_path)
+    try:
+        window._scroll_question = question
+        window._scroll_options = {
+            "A": question.options["A"],
+            "B": question.options["B"],
+        }
+        lower = (
+            "C. " + question.options["C"] + "\n"
+            "D. " + question.options["D"]
+        )
+        merged = window._merge_scrolled(lower, window.index)
+        assert merged is not None
+        _text, match = merged
+        assert match.status == "matched"
+        assert match.answers == ("B",)
+    finally:
+        window.close()

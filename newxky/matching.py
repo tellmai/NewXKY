@@ -300,6 +300,19 @@ class KnowledgeIndex:
                         and correct.issubset(visible.values())):
                     answers = tuple(sorted(label for label, value in visible.items() if value in correct))
                     return Match("matched", "题干与正确选项内容已核对，答案字母已按当前画面对应", q, answers, options, 1)
+                # If the answer content is not visible at all, the exam page is
+                # probably scrolled past it.  Do not silently substitute bank
+                # letters; ask the user to bring all options into the region.
+                bank_contents = {normalized(value) for value in q.options.values() if normalized(value)}
+                present_contents = {value for value in bank_contents if value in whole}
+                if len(present_contents) < len(bank_contents) and not correct.issubset(present_contents):
+                    return Match(
+                        "incomplete",
+                        f"题干已匹配；当前画面只识别到 {len(present_contents)}/{len(bank_contents)} 个选项，"
+                        "答案可能在未显示的选项里。请向下滚动考试页面，直到全部选项进入框选区域，"
+                        "程序会自动重新识别；如题干移出框，请适当调大或上移框选区域。",
+                        q, options=options, score=1,
+                    )
             if not recovered and len(options) >= min(len(candidate.options) for candidate in candidates):
                 reference = _option_reference(q, options)
                 scope = "以下按相似内容推测网页顺序" if reference.screen_order else "以下按题库顺序显示答案"
