@@ -15,10 +15,12 @@ if (-not $DistRoot) {
 }
 $distRoot = [System.IO.Path]::GetFullPath($DistRoot)
 $workRoot = Join-Path $projectRoot ('build\' + (Split-Path $distRoot -Leaf))
+& $Python (Join-Path $PSScriptRoot 'build_bank_from_pdf.py')
+if ($LASTEXITCODE -ne 0) { throw '指定 PDF 题库构建失败' }
 & $Python -m PyInstaller --noconfirm --clean --distpath $distRoot --workpath $workRoot (Join-Path $projectRoot 'NewXKY.spec')
 if ($LASTEXITCODE -ne 0) { throw '打包失败' }
 $app = Join-Path $distRoot 'NewXKY'
-& $Python -c "import json; from pathlib import Path; from newxky.license_config import LICENSE_SERVER_URL; Path(r'$($app)\build-config.json').write_text(json.dumps({'license_server_url': LICENSE_SERVER_URL}, ensure_ascii=False, indent=2), encoding='utf-8')"
+& $Python (Join-Path $PSScriptRoot 'write_build_config.py') $app
 if ($LASTEXITCODE -ne 0) { throw '构建配置写入失败' }
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination (Join-Path $app 'README.md')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'THIRD_PARTY_NOTICES.md') -Destination (Join-Path $app 'THIRD_PARTY_NOTICES.md')

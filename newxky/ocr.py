@@ -275,8 +275,14 @@ class LocalOCR:
                     from .ocr_engine import OCREngine
                     self._engine = OCREngine()
 
-    def recognize(self, image: bytes) -> str:
-        return self.recognize_layout(image).text
+    def recognize(self, image: bytes, *, clip_edges=False) -> str:
+        layout=self.recognize_layout(image)
+        if not clip_edges:
+            return layout.text
+        # A clipped glyph at a viewport edge is not a full word. Overlapping
+        # scroll frames will read it again; never append it to the prior choice.
+        lines=[line for line in layout.lines if line.rect[1]>2 and line.rect[3]<layout.height-2]
+        return text_from_rows((line.box,line.text,line.confidence) for line in lines)
 
     def recognize_layout(self, image: bytes, *, reuse_text=False, force=False) -> OCRLayout:
         """Retain original hit-test geometry; serialize inference across workers.

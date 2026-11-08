@@ -67,7 +67,7 @@ license_server/
 在 Windows 本机项目目录上传部署包：
 
 ```powershell
-scp .\dist\NewXKY-LicenseServer-V1.0.8.zip root@服务器公网IP:/tmp/
+scp .\dist\NewXKY-LicenseServer-V1.0.9.zip root@服务器公网IP:/tmp/
 ssh root@服务器公网IP
 ```
 
@@ -76,7 +76,7 @@ ssh root@服务器公网IP
 ```bash
 apt update && apt install -y unzip openssl
 cd /opt
-unzip /tmp/NewXKY-LicenseServer-V1.0.8.zip
+unzip /tmp/NewXKY-LicenseServer-V1.0.9.zip
 cd NewXKY-LicenseServer
 TOKEN=$(openssl rand -hex 24)
 bash license_server/deploy.sh license.你的域名.com "$TOKEN"
@@ -102,9 +102,9 @@ curl -H "X-Admin-Token: 你的TOKEN" https://license.你的域名.com/api/v1/adm
 sudo apt update
 sudo apt install -y python3 unzip caddy
 
-# 2. 解压部署包（上传 NewXKY-LicenseServer-V1.0.8.zip 到 /tmp）
+# 2. 解压部署包（上传 NewXKY-LicenseServer-V1.0.9.zip 到 /tmp）
 sudo mkdir -p /opt/newxky
-sudo unzip /tmp/NewXKY-LicenseServer-V1.0.8.zip -d /opt/
+sudo unzip /tmp/NewXKY-LicenseServer-V1.0.9.zip -d /opt/
 sudo mv /opt/NewXKY-LicenseServer/license_server /opt/newxky/
 sudo useradd -r -s /usr/sbin/nologin newxky || true
 sudo chown -R newxky:newxky /opt/newxky

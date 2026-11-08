@@ -9,6 +9,7 @@ from .models import Bank
 
 BUNDLE_DIRECTORY = "题库"
 CACHE_NAME = "default-bank.json"
+SOURCE_PDF_NAME = "2026年度知识考试复习资料.pdf"
 SOURCE_LABEL = "2026知识库"
 
 

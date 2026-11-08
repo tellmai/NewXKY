@@ -1,10 +1,9 @@
-"""NewXKY V1.0.8 desktop interface: region OCR, bank answer, 40-minute license."""
+"""Desktop interface: scrolling region OCR, screen-order answers and licensing."""
 from __future__ import annotations
 
 import json
 import sys
 import time
-from difflib import SequenceMatcher
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -14,17 +13,18 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QFont, QGuiApplication, QIcon, QImage
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
     QTextEdit, QVBoxLayout, QWidget,
 )
 
 from . import __version__
+from .region_scroll import RegionScroller, ScrollUnavailable
+from .scroll_scan import ScrollReader
 from .default_bank import SOURCE_LABEL, load_startup_bank
-from .bank import normalized
 from .keyword_search import SearchWindow
 from .licensing import LicenseError, LicenseManager, LicenseState, format_remaining, valid_code
-from .matching import KnowledgeIndex, clean_stem, screen_parts
+from .matching import KnowledgeIndex
 from .models import Bank
 from .monitor import FrameTracker
 from .ocr import LocalOCR
@@ -267,7 +267,7 @@ class ActivationDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    """The complete V1.0.8 UI: bank, region OCR and license countdown."""
+    """Question bank, region OCR, bounded scrolling and license countdown."""
 
     def __init__(self, manager: LicenseManager, bank: Bank, *, data_dir: Path | None = None,
                  app_dir: Path | None = None):
@@ -296,8 +296,9 @@ class MainWindow(QMainWindow):
         self.search_window = None
         self.last_text = ""
         self._incomplete_question = None
-        self._scroll_question = None
-        self._scroll_options = {}
+        self._scroll_reader = None
+        self._scroll_due = 0.0
+        self.scroller = RegionScroller()
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.border = RegionBorder()
@@ -371,8 +372,13 @@ class MainWindow(QMainWindow):
         self.start_button.setObjectName("primary")
         self.start_button.clicked.connect(self.toggle_monitor)
         region_layout.addWidget(self.start_button)
+        self.auto_scroll = QCheckBox("选项不全时自动滚动")
+        self.auto_scroll.setChecked(True)
+        self.auto_scroll.setToolTip("仅在框选的题目窗口滚动，不点击选项或下一题；按 Esc 或暂停识别可停止。")
+        self.auto_scroll.toggled.connect(self.scroll_setting_changed)
+        region_layout.addWidget(self.auto_scroll)
         region_layout.addWidget(label(
-            "框选一道题的完整题干和全部选项；把本窗口移到区域外，题目变化后答案会自动更新。",
+            "框住一道题的滚动区域，把本窗口移到框外；选项不全时自动滚动读取，核对后显示当前页面的答案字母。",
             "muted", True,
         ))
         side.addWidget(region_card)
@@ -634,7 +640,7 @@ class MainWindow(QMainWindow):
         text = (
             f"NewXKY 区域答题助手 V{__version__}\n\n"
             "功能：框选屏幕中的一道题，使用本机 OCR 识别题干和选项，"
-            "在本地题库中匹配正确答案。程序不自动点击网页、不操作浏览器。\n\n"
+            "在本地题库中匹配正确答案。选项不全时在框内滚动读取，不点击答案或换题按钮。\n\n"
             "授权：每个验证码仅能激活一台电脑，有效 40 分钟；"
             "同一台电脑在 40 分钟内可以关闭并重新打开。到期后验证码失效，需要新的验证码。\n\n"
             "隐私：截图、文字识别和题库匹配均在本机完成，不上传网络。"
@@ -787,7 +793,7 @@ class MainWindow(QMainWindow):
         self.update_border()
         self.capture()
 
-    def clear_answer(self, message: str):
+    def clear_answer(self, message: str, *, reset_scan=True):
         self.answer_title.setText("当前题目 / 答案")
         self.answer.setText("—")
         self.answer.setStyleSheet("")
@@ -795,9 +801,19 @@ class MainWindow(QMainWindow):
         self.provenance.clear()
         self.bank_fallback_button.hide()
         self._incomplete_question = None
-        self._scroll_question = None
-        self._scroll_options = {}
+        if reset_scan:
+            self._scroll_reader = None
+            self._scroll_due = 0.0
+            self.scroller.reset()
         self.message.setText(emphasize_bank_order(message))
+
+    def scroll_setting_changed(self, _):
+        self._scroll_reader = None
+        self._scroll_due = 0.0
+        self.scroller.reset()
+        if self.running:
+            self.tracker.invalidate()
+        self._save_settings()
 
     def stop_monitor(self, reason: str = "已暂停"):
         self.running = False
@@ -813,6 +829,11 @@ class MainWindow(QMainWindow):
             return
         if not self.manager.can_use:
             self.license_expired("授权已到期，请输入新的验证码。")
+            return
+        if self._scroll_reader is not None and self.scroller.interrupted():
+            self.stop_monitor("已按 Esc 停止滚动识别")
+            return
+        if time.monotonic() < self._scroll_due:
             return
         issue = ""
         screen = QGuiApplication.screenAt(self.region.center())
@@ -847,7 +868,7 @@ class MainWindow(QMainWindow):
         )[:, :gray.width()]
         now = time.monotonic()
         if self.tracker.observe_image(pixels, now):
-            self.clear_answer("题目文字已变化，正在识别新题目…")
+            self.clear_answer("题目文字已变化，正在识别新题目…", reset_scan=False)
             self.status.setText("等待画面稳定")
             self._last_capture = image
         if not self.tracker.ready(now):
@@ -864,16 +885,8 @@ class MainWindow(QMainWindow):
         started = time.monotonic()
 
         def recognize(_):
-            text = self.ocr.recognize(content)
+            text = self.ocr.recognize(content, clip_edges=True)
             match = index.lookup(text)
-            # After the user scrolls, the stem may have left the region while
-            # the lower options became visible. Recombine the cached stem and
-            # already-seen options with this frame before falling back.
-            if self._scroll_question is not None and match.status in (
-                    "incomplete", "missing", "reference", "unverified"):
-                merged = self._merge_scrolled(text, index)
-                if merged is not None:
-                    text, match = merged
             return text, match, time.monotonic() - started
 
         self.launch(
@@ -882,46 +895,34 @@ class MainWindow(QMainWindow):
             lambda error: self.recognition_failed(revision, error),
         )
 
-    def _merge_scrolled(self, text, index):
-        question = self._scroll_question
-        if question is None:
-            return None
-        stem_text, current = screen_parts(text)
-        if not current:
-            return None
-        current_stem = normalized(clean_stem(stem_text))
-        bank_stem = normalized(question.stem)
-        if len(current_stem) >= 8:
-            similar = (
-                current_stem in bank_stem
-                or bank_stem in current_stem
-                or SequenceMatcher(None, current_stem, bank_stem, autojunk=False).ratio() >= .55
-            )
-            if not similar:
-                return None
-        merged = dict(self._scroll_options)
-        changed = False
-        for label, value in current.items():
-            if value and len(value) > len(merged.get(label, "")):
-                merged[label] = value
-                changed = True
-        if not changed and len(merged) < len(question.options):
-            return None
-        synthetic = question.stem + "\n" + "\n".join(
-            f"{label}. {value}" for label, value in sorted(merged.items())
-        )
-        alternate = index.lookup(synthetic)
-        if alternate.status in ("matched", "incomplete", "unverified", "reference"):
-            return synthetic, alternate
-        return None
-
     def recognized(self, revision, result):
         if not self.tracker.finish(revision) or not self.running:
             return
         text, match, elapsed = result
         self.last_text = text
         self.timing.setText(f"最近识别 {elapsed:.1f} 秒 · {datetime.now():%H:%M:%S}")
-        self.clear_answer(match.message)
+        if self.auto_scroll.isChecked() and self.region is not None:
+            if self._scroll_reader is None and ScrollReader.needs_scan(text, match, self.index):
+                self._scroll_reader = ScrollReader(self.index)
+            if self._scroll_reader is not None:
+                step = self._scroll_reader.feed(text, match)
+                if step.direction:
+                    self.clear_answer(step.match.message, reset_scan=False)
+                    self.status.setText("正在向上读取题干" if step.direction > 0 else "正在向下读取选项")
+                    self.timing.setText(f"本题滚动读取 {self._scroll_reader.steps} 次 · 按 Esc 可停止")
+                    try:
+                        self.scroller.wheel(self.region, step.direction)
+                    except (ScrollUnavailable, OSError) as error:
+                        step = self._scroll_reader.finish(str(error))
+                    else:
+                        self._scroll_due = time.monotonic() + .32
+                        self.tracker.invalidate()
+                        return
+                text, match = step.text, step.match
+                self.last_text = text
+                self._scroll_reader = None
+                self._scroll_due = 0.0
+        self.clear_answer(match.message, reset_scan=False)
         self.status.setText({
             "matched": "已核对网页选项",
             "reference": "已找到题库答案",
@@ -936,8 +937,6 @@ class MainWindow(QMainWindow):
                 f"{letter}. {value}" for letter, value in (match.options or {}).items()
             ) or "未识别到选项文字"
             self._incomplete_question = question
-            self._scroll_question = question
-            self._scroll_options = dict(match.options or {})
             self.answer_title.setText(emphasize_bank_order(
                 "选项未显示完整 / 请向下滚动", warning=True
             ))
@@ -1072,6 +1071,7 @@ class MainWindow(QMainWindow):
                     f"已恢复上次区域\n{rect.x()}, {rect.y()} · {rect.width()} × {rect.height()}"
                 )
                 self.update_border()
+            self.auto_scroll.setChecked(bool(data.get("auto_scroll", True)))
         except (OSError, ValueError, TypeError, KeyError):
             pass
 
@@ -1081,7 +1081,8 @@ class MainWindow(QMainWindow):
             path = self.data_dir / "settings.json"
             temporary = path.with_suffix(".tmp")
             temporary.write_text(
-                json.dumps({"region": self.region.getRect() if self.region is not None else None}),
+                json.dumps({"region": self.region.getRect() if self.region is not None else None,
+                            "auto_scroll": self.auto_scroll.isChecked()}),
                 encoding="utf-8",
             )
             temporary.replace(path)

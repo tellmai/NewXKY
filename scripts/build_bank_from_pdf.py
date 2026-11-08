@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from newxky.bank import normalized, question_key, save_bank
-from newxky.default_bank import SOURCE_LABEL
+from newxky.default_bank import SOURCE_LABEL, SOURCE_PDF_NAME
 from newxky.models import Bank, Question
 
 TITLE = re.compile(r"\d{4}\s*年度.*(?:考试复习资料|考试题库)")
@@ -146,7 +146,7 @@ def load_pdf(path: Path) -> Bank:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("pdf", type=Path, nargs="?", default=ROOT / "题库" / "2026年度知识考试复习资料.pdf")
+    parser.add_argument("pdf", type=Path, nargs="?", default=ROOT / "题库" / SOURCE_PDF_NAME)
     parser.add_argument("--output", type=Path, default=ROOT / "题库" / "default-bank.json")
     args = parser.parse_args()
     pdf = args.pdf.resolve()

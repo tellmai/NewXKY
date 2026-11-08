@@ -10,6 +10,9 @@ from .bank import normalized
 from .models import Question
 
 NAVIGATION = re.compile(r"\n\s*(?:上一题|上题|下一题|提交试卷|提交答卷|完成检查|交卷|答题卡|标记此题|收藏本题)(?:\s|$)")
+CHOICE_HINT = re.compile(
+    r"^[ \t]*(?:请选择(?:一个|一项|所有|全部)?(?:正确)?(?:答案|选项)|"
+    r"请(?:单选|多选))[ \t]*[。.:：]?[ \t]*$", re.M)
 
 
 def _option_orders(text, values):
@@ -128,6 +131,9 @@ def screen_parts(text: str):
 
 
 def clean_stem(text: str):
+    # Mobile exam pages insert these UI instructions between the stem and A.
+    # Only complete instruction rows are removed; the same words in prose stay.
+    text = CHOICE_HINT.sub("", unicodedata.normalize("NFKC", text))
     # Exam cards put the type and a decorative question number above the stem.
     # A complete standalone tag can delimit the card even in a larger selection.
     # Tiny type badges may read e.g. "多造明·可多造 95". Their full
@@ -234,7 +240,12 @@ class KnowledgeIndex:
         # Generic stems (e.g. "以下说法正确的是") can be a suffix of a longer
         # bank stem. Count separate occurrences, not nested stem substrings.
         spans = set()
+        option_contents = {normalized(value) for value in options.values()}
         for key in {self.stems[i] for i in contained}:
+            # A choice can itself be another bank's judgment statement. It is
+            # not a second exam card merely because its whole text is indexed.
+            if key in option_contents and key != stem:
+                continue
             start = whole.find(key)
             while start >= 0:
                 spans.add((start, start + len(key)))

@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from newxky import __version__
 from newxky.license_config import LICENSE_SERVER_URL
+from newxky.default_bank import SOURCE_PDF_NAME
 
 VERSION = __version__
 
@@ -50,6 +51,14 @@ def main() -> int:
         parser.error("Build the standalone executable first")
     if not (ROOT / "题库" / "default-bank.json").is_file():
         parser.error("题库/default-bank.json is missing")
+    try:
+        manifest=json.loads((ROOT / '题库' / 'manifest.json').read_text(encoding='utf-8'))
+        if (manifest['pdf']!=SOURCE_PDF_NAME
+                or manifest['pdf_sha256']!=digest(ROOT/'题库'/SOURCE_PDF_NAME)
+                or manifest['cache_sha256']!=digest(ROOT/'题库/default-bank.json')):
+            parser.error('题库与指定 PDF 不一致，请重新执行 scripts/build.ps1')
+    except (OSError,ValueError,KeyError,TypeError) as error:
+        parser.error(f'指定 PDF 题库校验失败：{error}')
     if not args.allow_local:
         try:
             built = json.loads((app / "build-config.json").read_text(encoding="utf-8"))
@@ -57,6 +66,8 @@ def main() -> int:
             parser.error(f"build-config.json missing or invalid: {error}")
         if built.get("license_server_url") != str(LICENSE_SERVER_URL or ""):
             parser.error("The built exe uses a different license address; rebuild before packaging")
+        if built.get('version')!=VERSION or built.get('bank_sha256')!=manifest['cache_sha256']:
+            parser.error('The built exe has an older version or question bank; rebuild before packaging')
 
     bundle = app / "题库"
     bundle.mkdir(parents=True, exist_ok=True)
@@ -64,13 +75,14 @@ def main() -> int:
     shutil.copy2(ROOT / "README.md", app / "使用说明.md")
     shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", app / "THIRD_PARTY_NOTICES.md")
     (app / "使用说明.txt").write_text(
-        "NewXKY 区域答题助手 V1.0.8 免安装版\n\n"
+        f"NewXKY 区域答题助手 V{VERSION} 免安装版\n\n"
         "1. 将整个 ZIP 解压到普通文件夹，双击 NewXKY.exe；不要只复制 exe。\n"
         "2. 首次启动输入软件验证码。每个验证码只能激活一台电脑，可用 40 分钟。\n"
         "3. 40 分钟内关闭软件后可以重新打开；到期后该验证码失效，需要新的验证码。\n"
-        "4. 点击“框选 / 重选区域”，框住一道题的完整题干和全部选项。\n"
-        "5. 把答案窗口移到区域外，点击“开始识别”；题目变化后答案自动更新。\n"
-        "6. 本软件只做本地识别和题库答案显示，不自动点击、不操作浏览器。\n\n"
+        "4. 框住一道题的滚动区域，把答案窗口移到区域外，点击“开始识别”。\n"
+        "5. 选项不全时自动滚动补全题干与选项，全部核对后显示当前页面的答案字母。\n"
+        "6. 无法完全对应时，用红字标明题库顺序参考；请按选项内容核对。\n"
+        "7. 滚动时会临时将鼠标移入框内；不点击选项或换题按钮。按 Esc 或暂停识别停止。\n\n"
         "截图和识别均在本机完成，不上传网络。保留 data 文件夹可恢复上次框选区域。\n",
         encoding="utf-8",
     )
@@ -94,6 +106,7 @@ def main() -> int:
         "license_server_url": str(LICENSE_SERVER_URL or ""),
         "exe_sha256": digest(app / "NewXKY.exe"),
         "bank_sha256": digest(bundle / "default-bank.json"),
+        "source_pdf": manifest,
         "source_sha256": {
             str(path.relative_to(ROOT)).replace("\\", "/"): digest(path) for path in sources
         },

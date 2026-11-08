@@ -11,6 +11,17 @@ def row(left, top, text, width=500, height=24):
              [left + width, top + height], [left, top + height]], text, .99)
 
 
+def test_region_read_discards_clipped_edge_rows_until_an_overlapping_frame(monkeypatch):
+    from newxky.ocr import OCRLayout,OCRLine
+    rows=[row(10,0,'顶端残字',height=10),row(10,30,'完整正文'),row(10,94,'底端残字',height=6)]
+    layout=OCRLayout('全部原文',tuple(OCRLine(tuple(map(tuple,box)),text,score)
+                                     for box,text,score in rows),600,100)
+    ocr=LocalOCR()
+    monkeypatch.setattr(ocr,'recognize_layout',lambda image:layout)
+    assert ocr.recognize(b'image',clip_edges=True)=='完整正文'
+    assert ocr.recognize(b'image')=='全部原文'
+
+
 def card_rows(stem, options, *, inline=False):
     rows = [row(180, 20, stem)]
     top = 110

@@ -7,6 +7,7 @@ from newxky.keyword_search import SearchWindow
 from newxky.matching import KnowledgeIndex, Match
 from newxky.models import Bank, Question
 from newxky.ui import ActivationDialog, MainWindow
+from newxky import __version__
 
 
 class FakeManager:
@@ -54,7 +55,7 @@ def test_main_window_is_simplified_and_shows_license(tmp_path):
         window.license_tick()
         texts = [button.text() for button in window.findChildren(QPushButton)]
         assert "已验证 · 剩余 39:59" in window.license_label.text()
-        assert "V1.0.8" in window.windowTitle()
+        assert f"V{__version__}" in window.windowTitle()
         assert window.bank_count.text() == "1"
         assert not window.findChildren(QTabWidget)
         assert not any("导入" in text or "自动答题" in text or "人员" in text for text in texts)
@@ -227,18 +228,16 @@ def test_scrolled_lower_options_merge_with_cached_upper_options(tmp_path):
     window = MainWindow(manager, Bank([question], sources=["题库.pdf"], page_count=1),
                         data_dir=tmp_path, app_dir=tmp_path)
     try:
-        window._scroll_question = question
-        window._scroll_options = {
-            "A": question.options["A"],
-            "B": question.options["B"],
-        }
+        from newxky.scroll_scan import ScrollReader
+        reader=ScrollReader(window.index)
+        upper=question.stem+'\nA. 选项甲\nB. 选项乙'
+        first=reader.feed(upper,window.index.lookup(upper))
+        assert first.direction==-1 and not first.match.answers
         lower = (
             "C. " + question.options["C"] + "\n"
             "D. " + question.options["D"]
         )
-        merged = window._merge_scrolled(lower, window.index)
-        assert merged is not None
-        _text, match = merged
+        match=reader.feed(lower,window.index.lookup(lower)).match
         assert match.status == "matched"
         assert match.answers == ("B",)
     finally:
