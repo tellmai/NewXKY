@@ -25,3 +25,4 @@ tmp/
 *.png
 *.jpg
 *.jpeg
+_testenv/

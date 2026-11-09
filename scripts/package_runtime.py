@@ -205,7 +205,8 @@ if defined MISSING (
   echo         "Microsoft Visual C++ 2015-2022 Redistributable (x64)".
 )
 echo.
-echo Requires Windows 10 1809 x64 or newer. See 使用说明.md for details.
+echo Requires Windows 10 1809 x64 or newer.
+echo See the readme file in this folder for details.
 echo.
 pause
 """
@@ -230,6 +231,10 @@ USAGE_TXT = """NewXKY 区域答题助手 V{version} 免安装版
 
 
 def write_launchers(app: Path) -> None:
+    # cmd.exe parses batch files with the console code page, so a single
+    # non-ASCII byte can corrupt the command block on some systems.
+    for name, text in (("启动软件.cmd", LAUNCHER_CMD), ("运行环境检查.cmd", CHECKER_CMD)):
+        text.encode("ascii")
     (app / "启动软件.cmd").write_text(LAUNCHER_CMD, encoding="ascii", newline="\r\n")
     (app / "运行环境检查.cmd").write_text(CHECKER_CMD, encoding="ascii", newline="\r\n")
     (app / "使用说明.txt").write_text(USAGE_TXT.format(version=VERSION), encoding="utf-8")
@@ -274,7 +279,8 @@ def zip_application(app: Path, output: Path) -> None:
                              f"NewXKY/{BUNDLE_DIRECTORY}/{CACHE_NAME}",
                              "NewXKY/runtime/pythonw.exe"):
                 assert required in names, required
-            assert not any("/data/" in name or name.endswith("license.dat") for name in names)
+            assert not any(name.startswith("NewXKY/data/") or name.endswith("/license.dat")
+                           for name in names)
         temporary.replace(output)
     finally:
         temporary.unlink(missing_ok=True)
@@ -287,6 +293,8 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--keep-runtime", action="store_true",
                         help="ship the runtime without pruning unused packages")
+    parser.add_argument("--reuse", action="store_true",
+                        help="重新打包 --dist-root 下已组装好的目录（跳过复制与编译）")
     args = parser.parse_args()
 
     runtime = args.runtime.resolve()
@@ -300,16 +308,27 @@ def main() -> int:
         parser.error("构建目录与压缩包必须位于项目 dist 目录内")
 
     app = dist_root / "NewXKY"
-    if app.exists():
-        shutil.rmtree(app)
-    app.mkdir(parents=True)
-    print("COPY_SOURCES", flush=True)
-    copy_sources(app)
-    print("COPY_RUNTIME", flush=True)
-    sizes = copy_runtime(runtime, app / "runtime", keep=args.keep_runtime)
-    print("COMPILE_LAUNCHER", flush=True)
-    executable = compile_launcher(app)
-    write_launchers(app)
+    if args.reuse:
+        if not (app / "NewXKY.exe").is_file():
+            parser.error(f"--reuse 需要已组装好的目录：{app}")
+        print("REUSE_APP", flush=True)
+    else:
+        if app.exists():
+            shutil.rmtree(app)
+        app.mkdir(parents=True)
+        print("COPY_SOURCES", flush=True)
+        copy_sources(app)
+        print("COPY_RUNTIME", flush=True)
+        sizes = copy_runtime(runtime, app / "runtime", keep=args.keep_runtime)
+        print("COMPILE_LAUNCHER", flush=True)
+        executable = compile_launcher(app)
+        write_launchers(app)
+    sizes = {
+        "bytes_before": sum(file.stat().st_size for file in runtime.rglob("*") if file.is_file()),
+        "bytes_after": sum(file.stat().st_size for file in (app / "runtime").rglob("*")
+                           if file.is_file()),
+    }
+    executable = app / "NewXKY.exe"
     executable_info = {
         "name": "NewXKY.exe",
         "format": "C# launcher for the bundled CPython runtime",
