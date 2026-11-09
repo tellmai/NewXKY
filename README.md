@@ -1,9 +1,9 @@
-# NewXKY 区域答题助手 V1.0.9
+# NewXKY 区域答题助手 V1.1.0
 
 Windows 本地桌面程序。框选屏幕中的一道题，程序用本机 OCR 识别题干和选项，在内置题库中匹配正确答案。选项显示不全时自动在框内滚动，读完后按当前页面的字母显示答案；无法完全核对时用红字显示题库顺序参考。
 
 当前正式授权服务：`https://license.newxky-license.com`  
-正式免安装包：`dist\NewXKY-V1.0.9-Portable.zip`
+正式免安装包：`dist\NewXKY-V1.1.0-Portable.zip`
 
 ## 功能
 
@@ -51,11 +51,28 @@ Windows 本地桌面程序。框选屏幕中的一道题，程序用本机 OCR �
 
 > 授权状态显示“离线续用”表示暂时连不上授权服务器，程序会按本机记录继续倒计时；到期后同样会锁定。重新联网后会自动恢复“已验证”。
 
+## 运行环境与启动报错
+
+要求 **Windows 10 1809 或更新的 64 位系统**（Windows 11 同样可用）。程序自带 Python 与 Qt，不需要另装 Python，但建议安装 **Microsoft Visual C++ 2015-2022 运行库（x64）**。
+
+解压后的目录里必须有 `NewXKY.exe`、`_internal` 文件夹、`题库` 文件夹；三者缺一都会启动失败。**不要只复制 exe，也不要在压缩包里直接双击**。
+
+双击没有反应或提示缺少 DLL 时，先双击同目录下的 `运行环境检查.cmd`，它会逐项列出 `_internal` 里缺了哪个文件。常见提示对应关系：
+
+| 提示 | 原因 | 处理 |
+|---|---|---|
+| `无法启动此程序，因为计算机中丢失 api-ms-win-core-sysinfo-l1-2-0.dll` | 系统低于 Windows 10，或系统文件被精简版/优化工具删除；此时 Python 本身无法启动 | 换用 Windows 10 1809+ 的 64 位系统；此类机器上程序无法运行 |
+| `Failed to execute script 'main' ... DLL load failed while importing QtCore` | `_internal\PySide6` 缺失或被安全软件删除；也可能是没装 VC++ 运行库 | 重新完整解压；把程序加入安全软件白名单；安装 VC++ 2015-2022 运行库 x64 |
+| 双击后闪一下就退出，`data\startup-error.log` 有记录 | 缺少文件或被拦截 | 同上，并用 `运行环境检查.cmd` 核对 |
+| 提示“程序文件不完整，缺少以下组件” | 程序自检发现安装不完整 | 按弹窗里的列表重新解压或补装运行库 |
+
+正式包由 `scripts/release.ps1` 构建；构建与打包阶段都会按 `newxky/runtime_manifest.py` 里的清单校验运行库，缺文件时直接失败，不会生成有问题的 ZIP。
+
 ## 软件说明
 
 主界面“软件说明”按钮显示当前版本、授权状态和剩余时间：
 
-- 版本：V1.0.9
+- 版本：V1.1.0
 - 状态：已验证 / 离线续用 / 授权已到期
 - 剩余时间：40 分钟倒计时
 - 隐私：截图、OCR 和题库匹配均在本机完成，不上传网络。
@@ -78,7 +95,7 @@ $env:NEWXKY_LICENSE_SERVER = 'http://127.0.0.1:8787'
 .\.venv\Scripts\python.exe main.py
 ```
 
-## 构建 V1.0.9 免安装包
+## 构建 V1.1.0 免安装包
 
 拿到公网 HTTPS 地址后，可以一步完成“写入地址 → 构建 → 免安装 ZIP → 服务端部署 ZIP”：
 
@@ -121,11 +138,25 @@ powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -LicenseServer http
 输出：
 
 ```text
-dist\NewXKY-V1.0.9-Portable.zip
-dist\NewXKY-V1.0.9-Portable.zip.sha256
+dist\NewXKY-V1.1.0-Portable.zip
+dist\NewXKY-V1.1.0-Portable.zip.sha256
 ```
 
 包内只包含程序、运行库、OCR 模型和 `题库/default-bank.json`，不包含 PDF、人员资料、授权码或本机 `data`。
+
+### 没有 PyInstaller 时的等价出包方式
+
+发布机如果装不了 PyInstaller（没有 pip、不能联网），可以用随包的 `runtime` 运行时出同样的免安装包：
+
+```powershell
+.\runtime\python.exe scripts\package_runtime.py
+```
+
+它会把程序源码、`题库`、`assets` 和 `runtime` 组装到 `dist\release-runtime-<时间戳>\NewXKY`，用 Windows 自带的 C# 编译器（`csc.exe`）编译一个 `NewXKY.exe` 启动器（源码见 `scripts/launcher.cs`），再打成 `dist\NewXKY-V1.1.0-Portable.zip`。用户侧体验与 PyInstaller 版一致：解压后双击 `NewXKY.exe`。
+
+- 默认会剔除客户端用不到的包（playwright、ddddocr、pdfplumber、openpyxl 等），加 `--keep-runtime` 可保留完整运行时。
+- 打包前会校验 `题库/default-bank.json` 与 `manifest.json`、源 PDF 的哈希，并在打包后实际导入 PySide6/OCR 依赖做一次自检，不通过不会生成 ZIP。
+- 这个包依赖 .NET Framework 4.x（Windows 10 1809+ 自带）来启动 `NewXKY.exe`。
 
 同时可以生成授权服务端部署包（含已播种的 `licenses.db`，不含明文验证码）：
 
@@ -133,7 +164,7 @@ dist\NewXKY-V1.0.9-Portable.zip.sha256
 .\.venv\Scripts\python.exe scripts\package_server.py
 ```
 
-输出 `dist\NewXKY-LicenseServer-V1.0.9.zip`，上传服务器后按 [`license_server/README.md`](license_server/README.md) 配置 systemd 和 Caddy。
+输出 `dist\NewXKY-LicenseServer-V1.1.0.zip`，上传服务器后按 [`license_server/README.md`](license_server/README.md) 配置 systemd 和 Caddy。
 
 > 正式包必须填入公网 HTTPS 地址后重新构建；未配置地址时打包脚本会拒绝生成正式 ZIP。
 
@@ -142,7 +173,7 @@ dist\NewXKY-V1.0.9-Portable.zip.sha256
 如果没有公网授权地址，可以使用：
 
 ```text
-dist\NewXKY-V1.0.9-WindowsTest.zip
+dist\NewXKY-V1.1.0-WindowsTest.zip
 ```
 
 解压后双击 `启动测试版.cmd`，它会先启动随包的 `NewXKY-TestLicenseServer.exe`，再启动软件。验证码在 `test-license\测试验证码.txt`，共 5 个，每个只能激活一台电脑、可用 40 分钟。此包仅用于功能验收，不能作为正式分发包；正式分发必须使用公网 HTTPS 授权服务。
@@ -173,12 +204,15 @@ newxky/
   license_config.py        发版时填入的 HTTPS 授权地址
   bank.py                  题库 JSON 读写
   default_bank.py          加载内置题库
+  runtime_manifest.py      打包运行库清单（启动自检、构建与打包校验共用）
   matching.py              题干/选项匹配、模糊检索
   keyword_search.py        关键词搜题窗口
   selfcheck.py             隐藏的 OCR/题库自检入口
   ocr.py / ocr_engine.py   本地 OCR
   monitor.py               画面稳定检测
   region.py                框选区域
+  scroll_scan.py           跨屏题干/选项拼接
+  region_scroll.py         框内滚轮输入
 license_server/
   server.py                标准库 HTTPS 反向代理后的授权服务
   db.py                    SQLite 单次激活逻辑
@@ -189,9 +223,12 @@ scripts/
   build.ps1                PyInstaller 构建
   build_bank_from_pdf.py   从复习资料 PDF 生成内置题库
   release.ps1              一键正式构建与打包
-  package_executable.py    免安装 ZIP 打包
+  package_executable.py    免安装 ZIP 打包（PyInstaller 产物）
+  package_runtime.py       免安装 ZIP 打包（随包 runtime + 启动器，无需 PyInstaller）
+  launcher.cs              runtime 版 NewXKY.exe 启动器源码
   package_test_bundle.py   带本机授权服务的功能测试包
   package_server.py        授权服务端部署 ZIP
+  check_runtime.cmd        客户机上的运行环境检查（随包分发为“运行环境检查.cmd”）
   set_license_url.py       写入正式授权服务地址
   test_server_entry.py     功能测试包授权服务入口
   generate_icon.py         图标生成

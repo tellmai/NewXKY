@@ -6,6 +6,7 @@ import sys
 import time
 from collections import Counter
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -19,12 +20,13 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
+from .bank import normalized
 from .region_scroll import RegionScroller, ScrollUnavailable
-from .scroll_scan import ScrollReader
+from .scroll_scan import ScrollReader, complete_match
 from .default_bank import SOURCE_LABEL, load_startup_bank
 from .keyword_search import SearchWindow
 from .licensing import LicenseError, LicenseManager, LicenseState, format_remaining, valid_code
-from .matching import KnowledgeIndex
+from .matching import KnowledgeIndex, clean_stem, screen_parts
 from .models import Bank
 from .monitor import FrameTracker
 from .ocr import LocalOCR
@@ -295,6 +297,11 @@ class MainWindow(QMainWindow):
         self._ocr_ready = False
         self.search_window = None
         self.last_text = ""
+        # (number, answers, normalised stem) of the verified answer on screen.
+        # Selection only restyles the exam card, so a weaker re-read of the same
+        # question must never replace it with bank-order letters.
+        self._verified: tuple[int, tuple[str, ...], str] | None = None
+        self._verified_view: dict[str, str] = {}
         self._incomplete_question = None
         self._scroll_reader = None
         self._scroll_due = 0.0
@@ -801,6 +808,8 @@ class MainWindow(QMainWindow):
         self.provenance.clear()
         self.bank_fallback_button.hide()
         self._incomplete_question = None
+        self._verified = None
+        self._verified_view = {}
         if reset_scan:
             self._scroll_reader = None
             self._scroll_due = 0.0
@@ -868,8 +877,15 @@ class MainWindow(QMainWindow):
         )[:, :gray.width()]
         now = time.monotonic()
         if self.tracker.observe_image(pixels, now):
-            self.clear_answer("题目文字已变化，正在识别新题目…", reset_scan=False)
-            self.status.setText("等待画面稳定")
+            if self._verified is None:
+                self.clear_answer("题目文字已变化，正在识别新题目…", reset_scan=False)
+                self.status.setText("等待画面稳定")
+            else:
+                # Selecting an option only restyles the page. Keep the verified
+                # letters on screen and grey them while the frame is re-checked,
+                # instead of blanking and repainting a different answer.
+                self.answer.setStyleSheet("color:#8b9bab;")
+                self.status.setText("正在确认")
             self._last_capture = image
         if not self.tracker.ready(now):
             return
@@ -895,12 +911,57 @@ class MainWindow(QMainWindow):
             lambda error: self.recognition_failed(revision, error),
         )
 
+    def _restore_verified_view(self):
+        view = self._verified_view
+        if not view:
+            return
+        self.answer_title.setText(view["title"])
+        self.answer.setText(view["answer"])
+        self.answer.setStyleSheet(view["style"])
+        self.answer_detail.setPlainText(view["detail"])
+        self.message.setText(view["message"])
+        self.provenance.setText(view["provenance"])
+        self.status.setText(view["status"])
+
+    def _same_card(self, match, text: str) -> bool:
+        """True when the frame still shows the question whose answer is on screen."""
+        if self._verified is None:
+            return False
+        _number, _answers, stem = self._verified
+        if match.question is not None:
+            return normalized(match.question.stem) == stem
+        visible, _options = screen_parts(text)
+        reading = normalized(clean_stem(visible))
+        if not reading:
+            return False
+        return SequenceMatcher(None, reading, stem, autojunk=False).ratio() >= .6
+
+    def _keep_verified_answer(self, match, text: str) -> bool:
+        """Never downgrade a verified answer on the card the user just clicked.
+
+        Selecting an option repaints it, which can hide its letter from OCR and
+        turn a verified answer into bank-order letters. The question is
+        unchanged, so the verified letters stay until the card really changes.
+        """
+        if not self._same_card(match, text):
+            return False
+        if match.status != "matched":
+            return True
+        _number, answers, _stem = self._verified
+        if tuple(match.answers) == answers:
+            return True
+        # Different letters are only trusted when every option was read back.
+        return not complete_match(match)
+
     def recognized(self, revision, result):
         if not self.tracker.finish(revision) or not self.running:
             return
         text, match, elapsed = result
         self.last_text = text
         self.timing.setText(f"最近识别 {elapsed:.1f} 秒 · {datetime.now():%H:%M:%S}")
+        if self._keep_verified_answer(match, text):
+            self._restore_verified_view()
+            return
         if self.auto_scroll.isChecked() and self.region is not None:
             if self._scroll_reader is None and ScrollReader.needs_scan(text, match, self.index):
                 self._scroll_reader = ScrollReader(self.index)
@@ -959,6 +1020,8 @@ class MainWindow(QMainWindow):
             question = match.question
             options = match.options or question.options
             answers = match.answers or question.answers
+            if match.status == "matched":
+                self._verified = (question.number, tuple(answers), normalized(question.stem))
             self.answer.setText(" / ".join(answers))
             self.answer_detail.setPlainText(
                 f"{question.stem}\n\n" + "\n".join(f"{letter}. {options[letter]}" for letter in answers)
@@ -1005,6 +1068,18 @@ class MainWindow(QMainWindow):
                 f"第 {', '.join(map(str, question.pages))} 页\n"
                 f"{scope} · 仅供参考 · {caution}", warning=True
             ))
+        if self._verified is not None:
+            # Snapshot of the verified card, restored when a later frame of the
+            # same question is only restyled (see _restore_verified_view).
+            self._verified_view = {
+                "title": self.answer_title.text(),
+                "answer": self.answer.text(),
+                "style": self.answer.styleSheet(),
+                "detail": self.answer_detail.toPlainText(),
+                "message": self.message.text(),
+                "provenance": self.provenance.text(),
+                "status": self.status.text(),
+            }
 
     def show_bank_reference(self):
         """User explicitly chooses the bank-order fallback after a scroll prompt."""

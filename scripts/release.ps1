@@ -1,18 +1,27 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$LicenseServer
+    [string]$LicenseServer,
+    [string]$Python = ''
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$python = Join-Path $projectRoot '.venv\Scripts\python.exe'
 Set-Location -LiteralPath $projectRoot
+if (-not $Python) {
+    $Python = Join-Path $projectRoot '.venv\Scripts\python.exe'
+}
+if (-not (Test-Path $Python)) {
+    $fallback = Join-Path $projectRoot 'runtime\python.exe'
+    if (Test-Path $fallback) { $Python = $fallback }
+}
+$version = (& $Python -c "import sys; sys.path.insert(0, '.'); from newxky import __version__; print(__version__)").Trim()
+if ($LASTEXITCODE -ne 0 -or -not $version) { throw '无法读取版本号 newxky/__init__.py' }
 
-& $python scripts\set_license_url.py $LicenseServer
+& $Python scripts\set_license_url.py $LicenseServer
 if ($LASTEXITCODE -ne 0) { throw '授权地址无效' }
 
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $distRoot = Join-Path $projectRoot "dist\release-$stamp"
-& powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'build.ps1') -DistRoot $distRoot
+& powershell -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'build.ps1') -Python $Python -DistRoot $distRoot
 if ($LASTEXITCODE -ne 0) { throw '构建失败' }
 
 $app = Join-Path $distRoot 'NewXKY'
@@ -21,12 +30,12 @@ $distExe = Join-Path $app 'NewXKY.exe'
 if (-not (Test-Path $distExe) -and (Test-Path $builtExe)) {
     Copy-Item -LiteralPath $builtExe -Destination $distExe -Force
 }
-& $python scripts\package_executable.py --app-dir $app
+& $Python scripts\package_executable.py --app-dir $app
 if ($LASTEXITCODE -ne 0) { throw '免安装包生成失败' }
 
-& $python scripts\package_server.py
+& $Python scripts\package_server.py
 if ($LASTEXITCODE -ne 0) { throw '服务端包生成失败' }
 
 Write-Output 'RELEASE_READY'
-Get-ChildItem (Join-Path $projectRoot 'dist\NewXKY-V1.0.9-Portable.zip*')
-Get-ChildItem (Join-Path $projectRoot 'dist\NewXKY-LicenseServer-V1.0.9.zip*')
+Get-ChildItem (Join-Path $projectRoot "dist\NewXKY-V$version-Portable.zip*")
+Get-ChildItem (Join-Path $projectRoot "dist\NewXKY-LicenseServer-V$version.zip*")

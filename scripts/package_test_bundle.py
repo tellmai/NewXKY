@@ -13,6 +13,7 @@ from uuid import uuid4
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from newxky import __version__
+from newxky.runtime_manifest import missing_bank, missing_runtime
 
 
 def digest(path: Path) -> str:
@@ -35,6 +36,9 @@ def main() -> int:
         parser.error("app and output must be inside dist")
     if not (app / "NewXKY.exe").is_file() or not server.is_file():
         parser.error("app or test server executable missing")
+    problems = missing_runtime(app / "_internal") + missing_bank(app)
+    if problems:
+        parser.error("构建目录缺少运行库文件：" + "、".join(problems))
     if not (app / "test-license" / "licenses.db").is_file():
         parser.error("test-license/licenses.db missing")
     if not (app / "test-license" / "测试验证码.txt").is_file():

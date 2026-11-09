@@ -20,6 +20,7 @@ tmp/
 *.pem
 *.key
 *.pdf
+!题库/2026年度知识考试复习资料.pdf
 *.xlsx
 *.png
 *.jpg

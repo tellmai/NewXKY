@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 from newxky import __version__
 from newxky.license_config import LICENSE_SERVER_URL
 from newxky.default_bank import SOURCE_PDF_NAME
+from newxky.runtime_manifest import missing_bank, missing_runtime
 
 VERSION = __version__
 
@@ -49,6 +50,9 @@ def main() -> int:
         parser.error("Application and archive must be inside this project dist directory")
     if not (app / "NewXKY.exe").is_file() or not (app / "_internal").is_dir():
         parser.error("Build the standalone executable first")
+    problems = missing_runtime(app / "_internal") + missing_bank(app)
+    if problems:
+        parser.error("构建目录缺少运行库文件，客户电脑上会提示 DLL 缺失：" + "、".join(problems))
     if not (ROOT / "题库" / "default-bank.json").is_file():
         parser.error("题库/default-bank.json is missing")
     try:
@@ -74,6 +78,10 @@ def main() -> int:
     shutil.copy2(ROOT / "题库" / "default-bank.json", bundle / "default-bank.json")
     shutil.copy2(ROOT / "README.md", app / "使用说明.md")
     shutil.copy2(ROOT / "THIRD_PARTY_NOTICES.md", app / "THIRD_PARTY_NOTICES.md")
+    checker = ROOT / "scripts" / "check_runtime.cmd"
+    if not checker.is_file():
+        parser.error("scripts/check_runtime.cmd is missing")
+    shutil.copy2(checker, app / "运行环境检查.cmd")
     (app / "使用说明.txt").write_text(
         f"NewXKY 区域答题助手 V{VERSION} 免安装版\n\n"
         "1. 将整个 ZIP 解压到普通文件夹，双击 NewXKY.exe；不要只复制 exe。\n"
@@ -83,6 +91,9 @@ def main() -> int:
         "5. 选项不全时自动滚动补全题干与选项，全部核对后显示当前页面的答案字母。\n"
         "6. 无法完全对应时，用红字标明题库顺序参考；请按选项内容核对。\n"
         "7. 滚动时会临时将鼠标移入框内；不点击选项或换题按钮。按 Esc 或暂停识别停止。\n\n"
+        "如果双击 NewXKY.exe 没有反应、或提示缺少 DLL，请先双击同目录下的"
+        "“运行环境检查.cmd”，它会指出缺少哪个文件。本程序需要 Windows 10 1809 或更新的"
+        "64 位系统，并需要 Microsoft Visual C++ 2015-2022 运行库（x64）。\n\n"
         "截图和识别均在本机完成，不上传网络。保留 data 文件夹可恢复上次框选区域。\n",
         encoding="utf-8",
     )
@@ -124,7 +135,7 @@ def main() -> int:
         *(
             app / name for name in (
                 "使用说明.md", "使用说明.txt", "THIRD_PARTY_NOTICES.md",
-                "build-info.json", "build-config.json",
+                "build-info.json", "build-config.json", "运行环境检查.cmd",
             )
         ),
         app / "题库" / "default-bank.json",
