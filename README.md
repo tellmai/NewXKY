@@ -1,9 +1,9 @@
-# NewXKY 区域答题助手 V1.2.0
+# NewXKY 区域答题助手 V2.0.0
 
 Windows 本地桌面程序。框选屏幕中的一道题，程序用本机 OCR 识别题干和选项，在内置题库中匹配题目，然后**按题库顺序**显示题干和全部选项，正确项高亮。程序不控制鼠标、不滚动页面、不点击任何按钮，也不输出考试页面的字母顺序。
 
 当前正式授权服务：`https://license.newxky-license.com`  
-正式免安装包：`dist\NewXKY-V1.2.0-Portable.zip`
+正式免安装包：`dist\NewXKY-V2.0.0-Portable.zip`
 
 ## 功能
 
@@ -72,7 +72,7 @@ Windows 本地桌面程序。框选屏幕中的一道题，程序用本机 OCR �
 
 主界面“软件说明”按钮显示当前版本、授权状态和剩余时间：
 
-- 版本：V1.2.0
+- 版本：V2.0.0
 - 状态：已验证 / 离线续用 / 授权已到期
 - 剩余时间：40 分钟倒计时
 - 隐私：截图、OCR 和题库匹配均在本机完成，不上传网络。
@@ -95,7 +95,7 @@ $env:NEWXKY_LICENSE_SERVER = 'http://127.0.0.1:8787'
 .\.venv\Scripts\python.exe main.py
 ```
 
-## 构建 V1.2.0 免安装包
+## 构建 V2.0.0 免安装包
 
 拿到公网 HTTPS 地址后，可以一步完成“写入地址 → 构建 → 免安装 ZIP → 服务端部署 ZIP”：
 
@@ -138,8 +138,8 @@ powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -LicenseServer http
 输出：
 
 ```text
-dist\NewXKY-V1.2.0-Portable.zip
-dist\NewXKY-V1.2.0-Portable.zip.sha256
+dist\NewXKY-V2.0.0-Portable.zip
+dist\NewXKY-V2.0.0-Portable.zip.sha256
 ```
 
 包内只包含程序、运行库、OCR 模型和 `题库/default-bank.json`，不包含 PDF、人员资料、授权码或本机 `data`。
@@ -152,7 +152,7 @@ dist\NewXKY-V1.2.0-Portable.zip.sha256
 .\runtime\python.exe scripts\package_runtime.py
 ```
 
-它会把程序源码、`题库`、`assets` 和 `runtime` 组装到 `dist\release-runtime-<时间戳>\NewXKY`，用 Windows 自带的 C# 编译器（`csc.exe`）编译一个 `NewXKY.exe` 启动器（源码见 `scripts/launcher.cs`），再打成 `dist\NewXKY-V1.2.0-Portable.zip`。用户侧体验与 PyInstaller 版一致：解压后双击 `NewXKY.exe`。
+它会把程序源码、`题库`、`assets` 和 `runtime` 组装到 `dist\release-runtime-<时间戳>\NewXKY`，用 Windows 自带的 C# 编译器（`csc.exe`）编译一个 `NewXKY.exe` 启动器（源码见 `scripts/launcher.cs`），再打成 `dist\NewXKY-V2.0.0-Portable.zip`。用户侧体验与 PyInstaller 版一致：解压后双击 `NewXKY.exe`。
 
 - 默认会剔除客户端用不到的包（playwright、ddddocr、pdfplumber、openpyxl 等），加 `--keep-runtime` 可保留完整运行时。
 - 打包前会校验 `题库/default-bank.json` 与 `manifest.json`、源 PDF 的哈希，并在打包后实际导入 PySide6/OCR 依赖做一次自检，不通过不会生成 ZIP。
@@ -164,7 +164,7 @@ dist\NewXKY-V1.2.0-Portable.zip.sha256
 .\.venv\Scripts\python.exe scripts\package_server.py
 ```
 
-输出 `dist\NewXKY-LicenseServer-V1.2.0.zip`，上传服务器后按 [`license_server/README.md`](license_server/README.md) 配置 systemd 和 Caddy。
+输出 `dist\NewXKY-LicenseServer-V2.0.0.zip`，上传服务器后按 [`license_server/README.md`](license_server/README.md) 配置 systemd 和 Caddy。
 
 > 正式包必须填入公网 HTTPS 地址后重新构建；未配置地址时打包脚本会拒绝生成正式 ZIP。
 
@@ -173,7 +173,7 @@ dist\NewXKY-V1.2.0-Portable.zip.sha256
 如果没有公网授权地址，可以使用：
 
 ```text
-dist\NewXKY-V1.2.0-WindowsTest.zip
+dist\NewXKY-V2.0.0-WindowsTest.zip
 ```
 
 解压后双击 `启动测试版.cmd`，它会先启动随包的 `NewXKY-TestLicenseServer.exe`，再启动软件。验证码在 `test-license\测试验证码.txt`，共 5 个，每个只能激活一台电脑、可用 40 分钟。此包仅用于功能验收，不能作为正式分发包；正式分发必须使用公网 HTTPS 授权服务。

@@ -46,8 +46,33 @@ PRUNE_PACKAGES = (
     "pdfminer", "pdfplumber", "websockets",
     "cryptography", "cffi", "pycparser",
     "openpyxl", "et_xmlfile",
+    "bin",              # playwright's driver directory
 )
 PRUNE_DIRECTORIES = {"__pycache__"}
+
+# Stdlib the client never imports (verified by running the test suite against
+# the pruned runtime). sqlite3 stays: the licensing tests and server tools use it.
+PRUNE_STDLIB = frozenset({
+    "ensurepip", "idlelib", "pydoc_data", "venv", "distutils", "lib2to3",
+    "asyncio", "xml", "unittest", "tkinter", "turtledemo",
+})
+
+# Qt modules the application actually imports: QtCore/QtGui/QtWidgets only.
+# Everything else (Quick, Qml, Designer, Network, Sql, translations, qml/) goes.
+QT_KEEP = frozenset({
+    "__init__.py", "_config.py", "_git_pyside_version.py",
+    "pyside6.abi3.dll", "pyside6.abi3.lib",
+    "QtCore.pyd", "QtGui.pyd", "QtWidgets.pyd",
+    "Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll",
+    "plugins",
+})
+QT_KEEP_PLUGINS = {
+    "platforms": frozenset({"qwindows.dll", "qoffscreen.dll"}),
+    "styles": frozenset({"qmodernwindowsstyle.dll"}),
+    "imageformats": frozenset({"qico.dll"}),
+}
+# OpenCV's video/FFmpeg backend is not used by screenshot OCR.
+PRUNE_CV2_PREFIXES = ("opencv_videoio_ffmpeg",)
 
 
 def digest(path: Path) -> str:
@@ -65,11 +90,25 @@ def pruned(name: str) -> bool:
 
 def copy_runtime(source: Path, target: Path, *, keep: bool) -> dict:
     before = sum(file.stat().st_size for file in source.rglob("*") if file.is_file())
+    pyside = "Lib/site-packages/PySide6"
 
     def ignore(directory, names):
         dropped = {name for name in names if name in PRUNE_DIRECTORIES}
-        if not keep:
-            dropped |= {name for name in names if pruned(name)}
+        if keep:
+            return dropped
+        dropped |= {name for name in names if pruned(name)}
+        relative = Path(directory).relative_to(source).as_posix()
+        if relative == "Lib":
+            dropped |= {name for name in names if name in PRUNE_STDLIB}
+        elif relative == "Lib/site-packages/cv2":
+            dropped |= {name for name in names if name.startswith(PRUNE_CV2_PREFIXES)}
+        elif relative == pyside:
+            dropped |= {name for name in names if name not in QT_KEEP}
+        elif relative == f"{pyside}/plugins":
+            dropped |= {name for name in names if name not in QT_KEEP_PLUGINS}
+        elif relative.startswith(f"{pyside}/plugins/"):
+            allowed = QT_KEEP_PLUGINS.get(relative.rsplit("/", 1)[-1], frozenset())
+            dropped |= {name for name in names if name not in allowed}
         return dropped
 
     shutil.copytree(source, target, ignore=ignore)
@@ -240,20 +279,73 @@ def write_launchers(app: Path) -> None:
     (app / "使用说明.txt").write_text(USAGE_TXT.format(version=VERSION), encoding="utf-8")
 
 
+VERIFY_IMPORTS = """
+import PySide6.QtWidgets, cv2, numpy, PIL.Image, onnxruntime, rapidocr_onnxruntime
+import newxky.ui, newxky.answer_view, newxky.licensing, newxky.selfcheck
+print("imports ok")
+"""
+
+VERIFY_QT = """
+import os
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+from pathlib import Path
+from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtGui import QIcon, QTextDocument
+from newxky import answer_view
+from newxky.bank import read_bank
+from newxky.matching import KnowledgeIndex
+
+root = Path.cwd()
+app = QApplication([])
+window = QMainWindow()
+window.setWindowIcon(QIcon(str(root / "assets" / "NewXKY.ico")))
+assert not window.windowIcon().isNull(), "icon failed to load"
+window.show()
+
+question = read_bank(root / "题库" / "default-bank.json").questions[0]
+document = QTextDocument()
+document.setHtml(answer_view.render(question))
+assert document.size().height() > 20, "answer rich text did not render"
+assert question.stem[:8] in document.toPlainText(), "stem missing from answer"
+
+text = question.stem + "\\nA. " + question.options["A"] + "\\nB. " + question.options["B"]
+match = KnowledgeIndex([question]).lookup(text)
+assert match.status in {"matched", "reference", "incomplete"}, match.status
+print("qt ok", match.status)
+"""
+
+VERIFY_OCR = """
+import io
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
+from newxky.ocr import LocalOCR
+
+font_path = Path("C:/Windows/Fonts/msyh.ttc")
+if not font_path.exists():
+    print("ocr skipped (no font)")
+else:
+    font = ImageFont.truetype(str(font_path), 22)
+    image = Image.new("RGB", (700, 60), "white")
+    ImageDraw.Draw(image).text((10, 10), "企业数据安全管理", font=font, fill=(20, 20, 20))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    text = LocalOCR().recognize(buffer.getvalue(), clip_edges=True)
+    assert text.strip(), "OCR returned no text"
+    print("ocr ok", text.strip()[:16])
+"""
+
+
 def verify_application(app: Path) -> None:
     python = app / "runtime" / "python.exe"
-    environment = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONIOENCODING="utf-8")
-    checks = [
-        ("imports", "import PySide6.QtWidgets, cv2, numpy, PIL.Image, onnxruntime, "
-                    "rapidocr_onnxruntime, newxky.ui; print('imports ok')"),
-        ("qt", "from PySide6.QtWidgets import QApplication; app=QApplication([]);"
-               "from PySide6.QtGui import QIcon; print('qt ok')"),
-    ]
+    environment = dict(os.environ, PYTHONIOENCODING="utf-8")
+    checks = (("imports", VERIFY_IMPORTS), ("qt", VERIFY_QT), ("ocr", VERIFY_OCR))
     for label, code in checks:
         result = subprocess.run([str(python), "-c", code], cwd=str(app), env=environment,
                                 capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             raise SystemExit(f"打包校验失败（{label}）：\n{result.stdout}\n{result.stderr}")
+        print(f"  {label}: {result.stdout.strip().splitlines()[-1] if result.stdout.strip() else 'ok'}",
+              flush=True)
 
 
 def zip_application(app: Path, output: Path) -> None:
@@ -351,7 +443,12 @@ def main() -> int:
         "launcher": executable_info,
         "runtime_bytes": sizes,
         "runtime": "pruned" if not args.keep_runtime else "full",
-        "pruned_packages": [] if args.keep_runtime else list(PRUNE_PACKAGES),
+        "pruned_packages": [] if args.keep_runtime else sorted(PRUNE_PACKAGES),
+        "pruned_stdlib": [] if args.keep_runtime else sorted(PRUNE_STDLIB),
+        "pruned_qt": [] if args.keep_runtime else sorted({"Qt modules except QtCore/QtGui/QtWidgets",
+                                                         "plugins: platforms, styles, imageformats/qico",
+                                                         "translations, qml, resources, metatypes, typesystems"}),
+        "pruned_opencv": [] if args.keep_runtime else list(PRUNE_CV2_PREFIXES),
         "bank": manifest,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
