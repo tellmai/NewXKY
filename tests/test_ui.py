@@ -112,7 +112,7 @@ def test_region_enables_start_and_expiry_locks_it(tmp_path):
         window.close()
 
 
-def test_recognized_answer_is_rendered(tmp_path):
+def test_recognized_answer_is_rendered_in_bank_order(tmp_path):
     manager = FakeManager()
     window = MainWindow(manager, bank(), data_dir=tmp_path, app_dir=tmp_path)
     try:
@@ -129,9 +129,14 @@ def test_recognized_answer_is_rendered(tmp_path):
         assert window.tracker.ready(.5)
         revision = window.tracker.begin()
         window.recognized(revision, (text, match, .1))
-        assert window.answer.text() == "B"
-        assert "依照法定权限" in window.answer_detail.toPlainText()
-        assert question.stem in window.answer_detail.toPlainText()
+        body = window.answer_detail.toPlainText()
+        assert window.answer_title.text() == "当前题目 / 题库答案"
+        assert "题库答案请注意实际考题顺序" in window.message.text()
+        assert "B" not in window.status.text()
+        assert window.status.text() == "题库答案"
+        assert question.stem in body
+        assert "A. " in body and "B. " in body
+        assert question.options["B"] in body
         assert "2026知识库" in window.provenance.text()
     finally:
         window.close()
@@ -190,7 +195,7 @@ def test_close_hides_region_border(tmp_path):
     assert not window.border.isVisible()
 
 
-def test_incomplete_options_prompt_scroll_and_offer_red_bank_fallback(tmp_path):
+def test_incomplete_page_options_still_show_the_full_bank_answer(tmp_path):
     manager = FakeManager()
     window = MainWindow(manager, bank(), data_dir=tmp_path, app_dir=tmp_path)
     try:
@@ -199,46 +204,34 @@ def test_incomplete_options_prompt_scroll_and_offer_red_bank_fallback(tmp_path):
         question = window.bank.questions[0]
         match = Match(
             "incomplete",
-            "当前画面只识别到 2/4 个选项，答案可能在未显示的选项里。请向下滚动考试页面。",
+            "题干已匹配；当前画面只识别到 2/4 个选项。",
             question, options={"A": question.options["A"], "B": question.options["B"]}, score=1,
         )
         window.tracker.observe(b"frame", 0)
         revision = window.tracker.begin()
         window.recognized(revision, ("识别文字", match, .1))
-        assert window.status.text() == "等待完整选项"
-        assert window.answer.text() == "待核对"
-        assert "滚动" in window.message.text()
-        assert window.bank_fallback_button.isVisible()
-        window.bank_fallback_button.click()
-        assert window.status.text() == "题库顺序参考"
-        assert "color:#c62828" in window.answer.styleSheet()
-        assert window.answer.text() == " / ".join(question.answers)
-        assert window.bank_fallback_button.isHidden()
+        body = window.answer_detail.toPlainText()
+        assert window.status.text() == "题库答案"
+        assert "题库答案请注意实际考题顺序" in window.message.text()
+        # Every bank option is listed even though the page showed only two.
+        assert question.options["A"] in body and question.options["B"] in body
+        assert question.stem in body
     finally:
         window.close()
 
 
-def test_scrolled_lower_options_merge_with_cached_upper_options(tmp_path):
+def test_missing_question_clears_the_answer(tmp_path):
     manager = FakeManager()
-    question = Question(
-        1, "单选", "跨屏题目（）",
-        {"A": "选项甲", "B": "选项乙", "C": "选项丙", "D": "选项丁"},
-        ("B",), (1,), "题库.pdf",
-    )
-    window = MainWindow(manager, Bank([question], sources=["题库.pdf"], page_count=1),
-                        data_dir=tmp_path, app_dir=tmp_path)
+    window = MainWindow(manager, bank(), data_dir=tmp_path, app_dir=tmp_path)
     try:
-        from newxky.scroll_scan import ScrollReader
-        reader=ScrollReader(window.index)
-        upper=question.stem+'\nA. 选项甲\nB. 选项乙'
-        first=reader.feed(upper,window.index.lookup(upper))
-        assert first.direction==-1 and not first.match.answers
-        lower = (
-            "C. " + question.options["C"] + "\n"
-            "D. " + question.options["D"]
-        )
-        match=reader.feed(lower,window.index.lookup(lower)).match
-        assert match.status == "matched"
-        assert match.answers == ("B",)
+        window.running = True
+        match = Match("missing", "2026知识库 中未找到匹配题目；可点击“关键词搜题”手动检索")
+        window.tracker.observe(b"blank", 0)
+        revision = window.tracker.begin()
+        window.recognized(revision, ("随便一段文字", match, .1))
+        assert window.status.text() == "未找到题目"
+        assert window.answer_detail.toPlainText() == ""
+        assert "未找到匹配题目" in window.message.text()
     finally:
         window.close()
+

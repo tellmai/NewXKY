@@ -1,4 +1,4 @@
-"""Desktop interface: scrolling region OCR, screen-order answers and licensing."""
+"""Desktop interface: region OCR, bank-order answers and licensing."""
 from __future__ import annotations
 
 import json
@@ -6,7 +6,6 @@ import sys
 import time
 from collections import Counter
 from datetime import datetime
-from difflib import SequenceMatcher
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -14,19 +13,16 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QFont, QGuiApplication, QIcon, QImage
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QApplication, QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QPushButton, QScrollArea, QSizePolicy,
     QTextEdit, QVBoxLayout, QWidget,
 )
 
-from . import __version__
-from .bank import normalized
-from .region_scroll import RegionScroller, ScrollUnavailable
-from .scroll_scan import ScrollReader, complete_match
+from . import __version__, answer_view
 from .default_bank import SOURCE_LABEL, load_startup_bank
 from .keyword_search import SearchWindow
 from .licensing import LicenseError, LicenseManager, LicenseState, format_remaining, valid_code
-from .matching import KnowledgeIndex, clean_stem, screen_parts
+from .matching import KnowledgeIndex
 from .models import Bank
 from .monitor import FrameTracker
 from .ocr import LocalOCR
@@ -47,7 +43,6 @@ QLabel#title { font-size: 24px; font-weight: 700; }
 QLabel#muted { color: #63778c; }
 QLabel#eyebrow { color: #0b8c78; font-weight: 600; }
 QLabel#bigCount { font-size: 34px; font-weight: 700; color: #102a43; }
-QLabel#answer { font-size: 52px; font-weight: 700; color: #087c68; }
 QLabel#status { background: #e8f5f1; color: #087c68; padding: 7px 12px; border-radius: 10px; }
 QLabel#licenseBadge { background: #e8f5f1; color: #087c68; padding: 7px 12px; border-radius: 9px; font-weight: 700; }
 QLabel#warning { color: #b42318; background: #fff4f2; border: 1px solid #f3c6c1; border-radius: 8px; padding: 8px 10px; }
@@ -61,8 +56,6 @@ QPushButton#primary:hover { background: #066c5f; }
 QPushButton#primary:disabled { background: #b1c9c4; border-color: #b1c9c4; }
 QPushButton#quiet { background: transparent; border: 0; color: #0b7f70; padding: 6px 8px; }
 QPushButton#quiet:hover { background: #edf8f3; }
-QPushButton#fallback { background:#fff4f2; color:#b42318; border:1px solid #f3c6c1; border-radius:8px; padding:7px 10px; font-weight:600; }
-QPushButton#fallback:hover { background:#ffe9e6; }
 QFrame#compactBar { background:transparent; border:0; }
 QPushButton#searchAction { background:#0b8c78; color:white; border:1px solid #0b8c78; border-radius:10px; padding:10px 18px; font-size:14px; font-weight:700; }
 QPushButton#searchAction:hover { background:#087f70; border-color:#087f70; }
@@ -269,7 +262,7 @@ class ActivationDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    """Question bank, region OCR, bounded scrolling and license countdown."""
+    """Question bank, region OCR, bank-order answers and license countdown."""
 
     def __init__(self, manager: LicenseManager, bank: Bank, *, data_dir: Path | None = None,
                  app_dir: Path | None = None):
@@ -297,15 +290,9 @@ class MainWindow(QMainWindow):
         self._ocr_ready = False
         self.search_window = None
         self.last_text = ""
-        # (number, answers, normalised stem) of the verified answer on screen.
-        # Selection only restyles the exam card, so a weaker re-read of the same
-        # question must never replace it with bank-order letters.
-        self._verified: tuple[int, tuple[str, ...], str] | None = None
-        self._verified_view: dict[str, str] = {}
-        self._incomplete_question = None
-        self._scroll_reader = None
-        self._scroll_due = 0.0
-        self.scroller = RegionScroller()
+        # Rich text currently in the answer pane; an identical re-read is not
+        # repainted, so selecting an option on the exam page cannot flicker.
+        self._rendered_answer = ""
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(2)
         self.border = RegionBorder()
@@ -379,13 +366,8 @@ class MainWindow(QMainWindow):
         self.start_button.setObjectName("primary")
         self.start_button.clicked.connect(self.toggle_monitor)
         region_layout.addWidget(self.start_button)
-        self.auto_scroll = QCheckBox("选项不全时自动滚动")
-        self.auto_scroll.setChecked(True)
-        self.auto_scroll.setToolTip("仅在框选的题目窗口滚动，不点击选项或下一题；按 Esc 或暂停识别可停止。")
-        self.auto_scroll.toggled.connect(self.scroll_setting_changed)
-        region_layout.addWidget(self.auto_scroll)
         region_layout.addWidget(label(
-            "框住一道题的滚动区域，把本窗口移到框外；选项不全时自动滚动读取，核对后显示当前页面的答案字母。",
+            "框住一道题的显示区域，把本窗口移到框外；答案按题库顺序显示，请按选项内容核对页面。",
             "muted", True,
         ))
         side.addWidget(region_card)
@@ -464,23 +446,17 @@ class MainWindow(QMainWindow):
 
         answer_card, answer_layout = card()
         self.answer_layout = answer_layout
-        self.answer_title = label("当前题目 / 答案", "eyebrow")
+        self.answer_title = label("当前题目 / 题库答案", "eyebrow")
         self.answer_title.setTextFormat(Qt.RichText)
         answer_layout.addWidget(self.answer_title)
-        self.answer = label("—", "answer")
-        answer_layout.addWidget(self.answer)
         self.message = label("请先框选屏幕中的题目区域，然后点击“开始识别”。", "muted", True)
         self.message.setTextFormat(Qt.RichText)
         answer_layout.addWidget(self.message)
-        self.bank_fallback_button = QPushButton("仍按题库顺序显示")
-        self.bank_fallback_button.setObjectName("fallback")
-        self.bank_fallback_button.hide()
-        self.bank_fallback_button.clicked.connect(self.show_bank_reference)
-        answer_layout.addWidget(self.bank_fallback_button, 0, Qt.AlignLeft)
         self.answer_detail = QTextEdit()
         self.answer_detail.setObjectName("answerDetail")
         self.answer_detail.setReadOnly(True)
-        self.answer_detail.setPlaceholderText("识别到完整题目后，这里显示正确选项的完整内容。")
+        self.answer_detail.setPlaceholderText(
+            "识别到题目后，这里按题库顺序显示题干和全部选项，正确项会高亮。")
         self.answer_detail.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         answer_layout.addWidget(self.answer_detail, 1)
         self.provenance = label("", "muted", True)
@@ -647,7 +623,8 @@ class MainWindow(QMainWindow):
         text = (
             f"NewXKY 区域答题助手 V{__version__}\n\n"
             "功能：框选屏幕中的一道题，使用本机 OCR 识别题干和选项，"
-            "在本地题库中匹配正确答案。选项不全时在框内滚动读取，不点击答案或换题按钮。\n\n"
+            "在本地题库中匹配题目，并按题库顺序给出题干和全部选项（正确项高亮）。"
+            "本版不控制鼠标、不滚动页面、不点击任何按钮，也不给出考试页面的字母顺序。\n\n"
             "授权：每个验证码仅能激活一台电脑，有效 40 分钟；"
             "同一台电脑在 40 分钟内可以关闭并重新打开。到期后验证码失效，需要新的验证码。\n\n"
             "隐私：截图、文字识别和题库匹配均在本机完成，不上传网络。"
@@ -800,29 +777,12 @@ class MainWindow(QMainWindow):
         self.update_border()
         self.capture()
 
-    def clear_answer(self, message: str, *, reset_scan=True):
-        self.answer_title.setText("当前题目 / 答案")
-        self.answer.setText("—")
-        self.answer.setStyleSheet("")
+    def clear_answer(self, message: str):
+        self.answer_title.setText("当前题目 / 题库答案")
         self.answer_detail.clear()
         self.provenance.clear()
-        self.bank_fallback_button.hide()
-        self._incomplete_question = None
-        self._verified = None
-        self._verified_view = {}
-        if reset_scan:
-            self._scroll_reader = None
-            self._scroll_due = 0.0
-            self.scroller.reset()
+        self._rendered_answer = ""
         self.message.setText(emphasize_bank_order(message))
-
-    def scroll_setting_changed(self, _):
-        self._scroll_reader = None
-        self._scroll_due = 0.0
-        self.scroller.reset()
-        if self.running:
-            self.tracker.invalidate()
-        self._save_settings()
 
     def stop_monitor(self, reason: str = "已暂停"):
         self.running = False
@@ -838,11 +798,6 @@ class MainWindow(QMainWindow):
             return
         if not self.manager.can_use:
             self.license_expired("授权已到期，请输入新的验证码。")
-            return
-        if self._scroll_reader is not None and self.scroller.interrupted():
-            self.stop_monitor("已按 Esc 停止滚动识别")
-            return
-        if time.monotonic() < self._scroll_due:
             return
         issue = ""
         screen = QGuiApplication.screenAt(self.region.center())
@@ -877,14 +832,12 @@ class MainWindow(QMainWindow):
         )[:, :gray.width()]
         now = time.monotonic()
         if self.tracker.observe_image(pixels, now):
-            if self._verified is None:
-                self.clear_answer("题目文字已变化，正在识别新题目…", reset_scan=False)
+            if not self._rendered_answer:
+                self.clear_answer("题目文字已变化，正在识别新题目…")
                 self.status.setText("等待画面稳定")
             else:
-                # Selecting an option only restyles the page. Keep the verified
-                # letters on screen and grey them while the frame is re-checked,
-                # instead of blanking and repainting a different answer.
-                self.answer.setStyleSheet("color:#8b9bab;")
+                # Selecting an option only restyles the page; keep the bank
+                # answer readable until the next frame is recognised.
                 self.status.setText("正在确认")
             self._last_capture = image
         if not self.tracker.ready(now):
@@ -911,47 +864,24 @@ class MainWindow(QMainWindow):
             lambda error: self.recognition_failed(revision, error),
         )
 
-    def _restore_verified_view(self):
-        view = self._verified_view
-        if not view:
-            return
-        self.answer_title.setText(view["title"])
-        self.answer.setText(view["answer"])
-        self.answer.setStyleSheet(view["style"])
-        self.answer_detail.setPlainText(view["detail"])
-        self.message.setText(view["message"])
-        self.provenance.setText(view["provenance"])
-        self.status.setText(view["status"])
-
-    def _same_card(self, match, text: str) -> bool:
-        """True when the frame still shows the question whose answer is on screen."""
-        if self._verified is None:
-            return False
-        _number, _answers, stem = self._verified
-        if match.question is not None:
-            return normalized(match.question.stem) == stem
-        visible, _options = screen_parts(text)
-        reading = normalized(clean_stem(visible))
-        if not reading:
-            return False
-        return SequenceMatcher(None, reading, stem, autojunk=False).ratio() >= .6
-
-    def _keep_verified_answer(self, match, text: str) -> bool:
-        """Never downgrade a verified answer on the card the user just clicked.
-
-        Selecting an option repaints it, which can hide its letter from OCR and
-        turn a verified answer into bank-order letters. The question is
-        unchanged, so the verified letters stay until the card really changes.
-        """
-        if not self._same_card(match, text):
-            return False
-        if match.status != "matched":
-            return True
-        _number, answers, _stem = self._verified
-        if tuple(match.answers) == answers:
-            return True
-        # Different letters are only trusted when every option was read back.
-        return not complete_match(match)
+    def show_bank_answer(self, question, match):
+        """Paint the bank's own stem and options; the page order is never used."""
+        body = answer_view.render(question)
+        if body != self._rendered_answer:
+            self._rendered_answer = body
+            self.answer_title.setText("当前题目 / 题库答案")
+            self.answer_detail.setHtml(body)
+            extra = ""
+            if match.status in answer_view.SIMILAR_STATUSES:
+                score = f"相似度 {match.score:.0%} · " if match.score else ""
+                extra = f"\n{score}请核对题干差异"
+            self.provenance.setText(emphasize_bank_order(
+                f"{SOURCE_LABEL} · {question.kind} · 第 {question.number} 题 · "
+                f"第 {', '.join(map(str, question.pages))} 页{extra}"
+            ))
+        self.message.setText(answer_view.banner(match.status))
+        self.status.setText(
+            "相似题" if match.status in answer_view.SIMILAR_STATUSES else "题库答案")
 
     def recognized(self, revision, result):
         if not self.tracker.finish(revision) or not self.running:
@@ -959,154 +889,12 @@ class MainWindow(QMainWindow):
         text, match, elapsed = result
         self.last_text = text
         self.timing.setText(f"最近识别 {elapsed:.1f} 秒 · {datetime.now():%H:%M:%S}")
-        if self._keep_verified_answer(match, text):
-            self._restore_verified_view()
-            return
-        if self.auto_scroll.isChecked() and self.region is not None:
-            if self._scroll_reader is None and ScrollReader.needs_scan(text, match, self.index):
-                self._scroll_reader = ScrollReader(self.index)
-            if self._scroll_reader is not None:
-                step = self._scroll_reader.feed(text, match)
-                if step.direction:
-                    self.clear_answer(step.match.message, reset_scan=False)
-                    self.status.setText("正在向上读取题干" if step.direction > 0 else "正在向下读取选项")
-                    self.timing.setText(f"本题滚动读取 {self._scroll_reader.steps} 次 · 按 Esc 可停止")
-                    try:
-                        self.scroller.wheel(self.region, step.direction)
-                    except (ScrollUnavailable, OSError) as error:
-                        step = self._scroll_reader.finish(str(error))
-                    else:
-                        self._scroll_due = time.monotonic() + .32
-                        self.tracker.invalidate()
-                        return
-                text, match = step.text, step.match
-                self.last_text = text
-                self._scroll_reader = None
-                self._scroll_due = 0.0
-        self.clear_answer(match.message, reset_scan=False)
-        self.status.setText({
-            "matched": "已核对网页选项",
-            "reference": "已找到题库答案",
-            "candidate": "相似题待核对",
-            "unverified": "网页选项待核对",
-            "incomplete": "等待完整选项",
-            "ambiguous": "匹配不唯一",
-        }.get(match.status, "未找到答案"))
-        if match.status == "incomplete" and match.question:
-            question = match.question
-            visible = "\n".join(
-                f"{letter}. {value}" for letter, value in (match.options or {}).items()
-            ) or "未识别到选项文字"
-            self._incomplete_question = question
-            self.answer_title.setText(emphasize_bank_order(
-                "选项未显示完整 / 请向下滚动", warning=True
-            ))
-            self.answer.setText("待核对")
-            self.answer.setStyleSheet("color:#b42318;font-size:34px;")
-            self.message.setText(emphasize_bank_order(match.message, warning=True))
-            self.answer_detail.setPlainText(
-                f"已匹配题库第 {question.number} 题：\n{question.stem}\n\n"
-                f"当前画面识别到的选项：\n{visible}\n\n"
-                "请向下滚动考试页面，直到全部选项进入框选区域。"
-            )
-            self.provenance.setText(emphasize_bank_order(
-                f"{SOURCE_LABEL} · {question.kind} · 第 {question.number} 题 · "
-                f"第 {', '.join(map(str, question.pages))} 页\n"
-                "尚未按题库顺序给答案；需要时可用下方按钮强制参考。",
-                warning=True,
-            ))
-            self.bank_fallback_button.show()
-        elif match.status in ("matched", "reference") and match.question:
-            question = match.question
-            options = match.options or question.options
-            answers = match.answers or question.answers
-            if match.status == "matched":
-                self._verified = (question.number, tuple(answers), normalized(question.stem))
-            self.answer.setText(" / ".join(answers))
-            self.answer_detail.setPlainText(
-                f"{question.stem}\n\n" + "\n".join(f"{letter}. {options[letter]}" for letter in answers)
-            )
-            scope = (
-                "答案字母已按当前画面选项顺序对应。"
-                if match.status == "matched"
-                else "题库顺序：网页可能调整选项顺序，请按选项内容核对。"
-            )
-            self.answer_title.setText(emphasize_bank_order(
-                "当前题目 / 网页答案" if match.status == "matched"
-                else "当前题目 / 题库答案（题库顺序）"
-            ))
-            if match.status == "reference":
-                self.answer.setStyleSheet("color:#c62828;font-size:52px;")
-                self.message.setText(emphasize_bank_order(match.message, warning=True))
-            self.provenance.setText(emphasize_bank_order(
-                f"{SOURCE_LABEL} · {question.kind} · 第 {question.number} 题 · "
-                f"第 {', '.join(map(str, question.pages))} 页\n{scope}",
-                warning=match.status == "reference",
-            ))
-        elif match.status in ("candidate", "unverified") and match.question:
-            question = match.question
-            reference = match.reference
-            answers = reference.answers if reference else question.answers
-            options = reference.options if reference else question.options
-            screen_order = reference is not None and reference.screen_order
-            title = "相似题参考" if match.status == "candidate" else "选项待核对"
-            scope = "参考网页顺序" if screen_order else "题库顺序"
-            self.answer_title.setText(emphasize_bank_order(f"{title} / {scope}", warning=True))
-            self.answer.setText("参考 " + " / ".join(answers))
-            self.answer.setStyleSheet("color:#c62828;font-size:36px;")
-            self.message.setText(emphasize_bank_order(match.message, warning=True))
-            correct = "\n".join(f"{letter}. {options[letter]}" for letter in answers)
-            stem_title = "相似题题干" if match.status == "candidate" else "题库原题"
-            self.answer_detail.setPlainText(f"{stem_title}：{question.stem}\n\n参考答案：\n{correct}")
-            caution = (
-                "选项文字尚未完全核对，请按完整内容确认。"
-                if match.status == "unverified"
-                else f"文字相似度 {match.score:.0%} · 请核对题干差异。"
-            )
-            self.provenance.setText(emphasize_bank_order(
-                f"{SOURCE_LABEL} · {question.kind} · 第 {question.number} 题 · "
-                f"第 {', '.join(map(str, question.pages))} 页\n"
-                f"{scope} · 仅供参考 · {caution}", warning=True
-            ))
-        if self._verified is not None:
-            # Snapshot of the verified card, restored when a later frame of the
-            # same question is only restyled (see _restore_verified_view).
-            self._verified_view = {
-                "title": self.answer_title.text(),
-                "answer": self.answer.text(),
-                "style": self.answer.styleSheet(),
-                "detail": self.answer_detail.toPlainText(),
-                "message": self.message.text(),
-                "provenance": self.provenance.text(),
-                "status": self.status.text(),
-            }
-
-    def show_bank_reference(self):
-        """User explicitly chooses the bank-order fallback after a scroll prompt."""
-        question = self._incomplete_question
+        question = match.question
         if question is None:
+            self.clear_answer(match.message)
+            self.status.setText("未找到题目")
             return
-        self.stop_monitor("已显示题库顺序参考")
-        self.answer_title.setText(emphasize_bank_order("题库答案（题库顺序）", warning=True))
-        self.answer.setText(" / ".join(question.answers))
-        self.answer.setStyleSheet("color:#c62828;font-size:52px;")
-        self.answer_detail.setPlainText(
-            f"{question.stem}\n\n"
-            + "\n".join(f"{letter}. {value}" for letter, value in question.options.items())
-        )
-        self.message.setText(emphasize_bank_order(
-            "未显示完整选项，以下答案按题库顺序显示；请按选项内容核对网页。",
-            warning=True,
-        ))
-        self.provenance.setText(emphasize_bank_order(
-            f"{SOURCE_LABEL} · {question.kind} · 第 {question.number} 题 · "
-            f"第 {', '.join(map(str, question.pages))} 页\n"
-            "题库顺序参考 · 不是按当前画面选项对应的答案",
-            warning=True,
-        ))
-        self.status.setText("题库顺序参考")
-        self._incomplete_question = None
-        self.bank_fallback_button.hide()
+        self.show_bank_answer(question, match)
 
     def recognition_failed(self, revision, message):
         if not self.tracker.finish(revision) or not self.running:
@@ -1146,7 +934,6 @@ class MainWindow(QMainWindow):
                     f"已恢复上次区域\n{rect.x()}, {rect.y()} · {rect.width()} × {rect.height()}"
                 )
                 self.update_border()
-            self.auto_scroll.setChecked(bool(data.get("auto_scroll", True)))
         except (OSError, ValueError, TypeError, KeyError):
             pass
 
@@ -1156,8 +943,7 @@ class MainWindow(QMainWindow):
             path = self.data_dir / "settings.json"
             temporary = path.with_suffix(".tmp")
             temporary.write_text(
-                json.dumps({"region": self.region.getRect() if self.region is not None else None,
-                            "auto_scroll": self.auto_scroll.isChecked()}),
+                json.dumps({"region": self.region.getRect() if self.region is not None else None}),
                 encoding="utf-8",
             )
             temporary.replace(path)

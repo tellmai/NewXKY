@@ -1,4 +1,4 @@
-"""Selecting an option restyles the card; it must not rewrite the answer."""
+"""Selecting an option restyles the exam card; the bank answer must stay put."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -39,9 +39,9 @@ class Manager:
         return 2399
 
 
-def question() -> Question:
+def question(number: int = 1) -> Question:
     return Question(
-        1, "单选",
+        number, "单选",
         "下列哪一项属于依法行政的要求（）",
         {"A": "任意扩大权限", "B": "依照法定权限和程序履行职责"},
         ("B",), (1,),
@@ -78,7 +78,6 @@ def build(tmp_path, monkeypatch, questions):
     monkeypatch.setattr(MainWindow, "start_license_refresh", lambda self: None)
     window = MainWindow(Manager(), Bank(questions), data_dir=tmp_path, app_dir=tmp_path)
     window.running = True
-    window.auto_scroll.setChecked(False)
     return window
 
 
@@ -88,33 +87,7 @@ def show(window, text, match, revision_seed=b"frame"):
     window.recognized(revision, (text, match, .1))
 
 
-def test_weaker_reread_of_the_clicked_card_keeps_the_verified_answer(tmp_path, monkeypatch):
-    q = question()
-    window = build(tmp_path, monkeypatch, [q])
-    try:
-        text = (q.stem + "\nA. " + q.options["A"] + "\nB. " + q.options["B"])
-        matched = window.index.lookup(text)
-        assert matched.status == "matched"
-        show(window, text, matched)
-        assert window.answer.text() == "B"
-        assert window.status.text() == "已核对网页选项"
-
-        # The user ticks B: the page only restyles it, and the letter is lost
-        # from the next read, so the matcher offers bank-order letters instead.
-        degraded = Match(
-            "reference",
-            "题干与全部选项内容已核对；字母或换行未完整识别，以下字母和内容按题库顺序显示",
-            q, q.answers, q.options, 1,
-        )
-        show(window, text, degraded, b"after-click")
-        assert window.answer.text() == "B"
-        assert window.status.text() == "已核对网页选项"
-        assert "c62828" not in window.answer.styleSheet()
-    finally:
-        window.close()
-
-
-def test_capture_keeps_the_answer_when_only_the_style_changed(tmp_path, monkeypatch):
+def test_style_only_frame_change_keeps_the_bank_answer(tmp_path, monkeypatch):
     q = question()
     state = {"frame": 0, "time": 100.0}
     monkeypatch.setattr("newxky.ui.time.monotonic", lambda: state["time"])
@@ -145,50 +118,71 @@ def test_capture_keeps_the_answer_when_only_the_style_changed(tmp_path, monkeypa
             state["time"] += .6
             window.capture()
 
-        tick()                      # first frame: waits for the picture to settle
         tick()
-        assert window.answer.text() == "B"
+        tick()
+        body = window.answer_detail.toPlainText()
+        assert q.stem in body
         state["frame"] = 1
         tick()
-        assert window.answer.text() == "B"
-        assert window.status.text() == "已核对网页选项"
+        assert window.answer_detail.toPlainText() == body
+        assert "题库答案请注意实际考题顺序" in window.message.text()
     finally:
         window.close()
 
 
-def test_different_question_replaces_the_verified_answer(tmp_path, monkeypatch):
-    first = question()
+def test_weaker_reread_of_the_same_question_keeps_the_bank_answer(tmp_path, monkeypatch):
+    q = question()
+    window = build(tmp_path, monkeypatch, [q])
+    try:
+        text = (q.stem + "\nA. " + q.options["A"] + "\nB. " + q.options["B"])
+        show(window, text, window.index.lookup(text))
+        body = window.answer_detail.toPlainText()
+        assert window.status.text() == "题库答案"
+
+        degraded = Match(
+            "reference", "题干与全部选项内容已核对；字母或换行未完整识别。",
+            q, q.answers, q.options, 1,
+        )
+        show(window, text, degraded, b"after-click")
+        assert window.answer_detail.toPlainText() == body
+        assert window.status.text() == "题库答案"
+        # No exam-page letters are ever printed, so nothing can be "wrong order".
+        assert "B / " not in window.answer_detail.toPlainText()
+    finally:
+        window.close()
+
+
+def test_different_question_replaces_the_answer_block(tmp_path, monkeypatch):
+    first = question(1)
     second = Question(2, "单选", "关于重要数据目录，下列说法正确的是（）",
                       {"A": "正确内容", "B": "其他内容"}, ("A",), (3,))
     window = build(tmp_path, monkeypatch, [first, second])
     try:
         text = (first.stem + "\nA. " + first.options["A"] + "\nB. " + first.options["B"])
         show(window, text, window.index.lookup(text))
-        assert window.answer.text() == "B"
+        assert first.stem in window.answer_detail.toPlainText()
 
         next_text = (second.stem + "\nA. " + second.options["A"]
                      + "\nB. " + second.options["B"])
         show(window, next_text, window.index.lookup(next_text), b"next-card")
-        assert window.answer.text() == "A"
-        assert second.stem in window.answer_detail.toPlainText()
+        body = window.answer_detail.toPlainText()
+        assert second.stem in body
+        assert first.stem not in body
     finally:
         window.close()
 
 
-def test_complete_reread_with_different_letters_still_updates(tmp_path, monkeypatch):
+def test_similar_question_is_marked_without_showing_letters(tmp_path, monkeypatch):
     q = question()
     window = build(tmp_path, monkeypatch, [q])
     try:
-        text = (q.stem + "\nA. " + q.options["A"] + "\nB. " + q.options["B"])
-        show(window, text, window.index.lookup(text))
-        assert window.answer.text() == "B"
-
-        # Same contents, reordered on the page: every option was read back, so
-        # the mapped letter really is A now and must be shown.
-        reordered = (q.stem + "\nA. " + q.options["B"] + "\nB. " + q.options["A"])
-        match = window.index.lookup(reordered)
-        assert match.status == "matched" and match.answers == ("A",)
-        show(window, reordered, match, b"reordered")
-        assert window.answer.text() == "A"
+        match = Match("candidate", "未完全匹配：以下为相似题的题库答案，仅供参考。",
+                      q, score=.82)
+        show(window, q.stem, match)
+        assert window.status.text() == "相似题"
+        assert "相似题，请核对题干" in window.message.text()
+        assert "题库答案请注意实际考题顺序" in window.message.text()
+        assert "82%" in window.provenance.text()
+        assert q.stem in window.answer_detail.toPlainText()
     finally:
         window.close()
