@@ -1,5 +1,6 @@
 """Collect one question across overlapping scroll frames, without guessing text."""
 from dataclasses import dataclass, replace
+from collections import Counter
 import re
 
 from .bank import normalized
@@ -33,20 +34,30 @@ class QuestionFragments:
         self.stem = ''
         self.options = {}
         self.conflict = False
+        self.question_number = None
 
     @property
     def text(self):
         return self.stem + '\n' + '\n'.join(
             f'{label}. {value}' for label, value in sorted(self.options.items()))
 
-    def add(self, text):
+    def add(self, text, question=None):
         leading, options = screen_parts(text)
         leading = clean_stem(leading).strip()
         current_stem = normalized(leading)
+        identified = (question is not None and current_stem == normalized(question.stem)
+                      and bool(options) and Counter(map(normalized, options.values()))
+                      <= Counter(map(normalized, question.options.values())))
+        switched = bool(identified and self.question_number is not None
+                        and question.number != self.question_number)
         # A newly visible, complete different stem means a question switch.
         if (self.stem and current_stem in self.index.stems
-                and current_stem != normalized(self.stem)):
+                and current_stem != normalized(self.stem)) or switched:
+            switched = True
             self.stem, self.options, self.conflict = '', {}, False
+            self.question_number = None
+        if identified:
+            self.question_number = question.number
         if not self.options:
             joined = join_fragment(self.stem, leading)
             if joined is not None:
@@ -86,6 +97,7 @@ class QuestionFragments:
                 self.conflict = True
             else:
                 self.options[label] = joined
+        return switched
 
     def lookup(self):
         result = self.index.lookup(self.text)
@@ -154,9 +166,11 @@ class ScrollReader:
                 self.phase = 'down'
                 self.unchanged = 0
                 self.fragments = QuestionFragments(self.index)
-                self.fragments.add(text)
+                self.fragments.add(text, match.question)
         else:
-            self.fragments.add(text)
+            if self.fragments.add(text, match.question):
+                self.steps = 0
+                self.unchanged = 0
             merged = self.fragments.lookup()
             if complete_match(merged):
                 self.phase = 'finished'

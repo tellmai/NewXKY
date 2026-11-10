@@ -13,6 +13,8 @@ from license_server import db
 from license_server.codes import generate_code
 from license_server.db import ActivationError
 from license_server.server import LicenseServer
+from license_server.signing import public_key_text
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from newxky.licensing import (
     LicenseError,
     LicenseManager,
@@ -28,7 +30,9 @@ def service(tmp_path):
     database = tmp_path / "licenses.db"
     code = generate_code()
     db.seed_codes(database, [(1, 1, code)])
-    server = LicenseServer(("127.0.0.1", 0), database)
+    signing_key = Ed25519PrivateKey.generate()
+    server = LicenseServer(("127.0.0.1", 0), database, signing_key=signing_key,
+                           clock=lambda: 1_800_000_000)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -36,6 +40,7 @@ def service(tmp_path):
             "url": f"http://127.0.0.1:{server.server_address[1]}",
             "database": database,
             "code": code,
+            "public_key": public_key_text(signing_key),
         }
     finally:
         server.shutdown()
@@ -49,6 +54,7 @@ def manager(tmp_path, service, machine="a" * 64, now=1_800_000_000):
         server_url=service["url"],
         machine_id=machine,
         clock=lambda: now,
+        public_key=service["public_key"],
     )
 
 
@@ -103,6 +109,7 @@ def test_copied_local_lease_is_rejected_on_another_machine(tmp_path, service):
     other = LicenseManager(
         tmp_path / "target", server_url=service["url"], machine_id="b" * 64,
         clock=lambda: 1_800_000_010,
+        public_key=service["public_key"],
     )
     assert not other.restore()
     assert "不属于当前电脑" in other.last_error

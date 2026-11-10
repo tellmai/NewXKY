@@ -14,11 +14,12 @@ a = Analysis(
     pathex=[str(root)],
     binaries=collect_dynamic_libs("onnxruntime"),
     datas=datas,
-    hiddenimports=["rapidocr_onnxruntime", "PIL", "onnxruntime"],
+    hiddenimports=["rapidocr_onnxruntime", "PIL", "onnxruntime",
+                   "cryptography.hazmat.primitives.asymmetric.ed25519"],
     excludes=[
         "tkinter", "matplotlib", "IPython", "notebook", "pytest", "torch",
         "tensorflow", "pdfplumber", "pdfminer", "playwright", "ddddocr",
-        "websockets", "openpyxl", "cryptography", "pypdfium2",
+        "websockets", "openpyxl", "pypdfium2",
     ],
     noarchive=False,
 )

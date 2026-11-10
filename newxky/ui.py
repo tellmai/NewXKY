@@ -6,7 +6,6 @@ import sys
 import time
 from collections import Counter
 from datetime import datetime
-from difflib import SequenceMatcher
 from pathlib import Path
 
 from PySide6.QtCore import (
@@ -302,6 +301,8 @@ class MainWindow(QMainWindow):
         # question must never replace it with bank-order letters.
         self._verified: tuple[int, tuple[str, ...], str] | None = None
         self._verified_view: dict[str, str] = {}
+        self._verified_options: dict[str, str] = {}
+        self._verified_content = ""
         self._incomplete_question = None
         self._scroll_reader = None
         self._scroll_due = 0.0
@@ -601,7 +602,8 @@ class MainWindow(QMainWindow):
             self.license_hint.setText("软件授权已生效。有效期内可随时开关，倒计时不暂停。")
             return
         code, message = payload
-        if code in {"expired", "already_used", "invalid_code", "disabled", "machine_mismatch"}:
+        if code in {"expired", "already_used", "invalid_code", "disabled", "machine_mismatch",
+                    "bad_signature", "clock_rollback"}:
             self.license_expired(message)
         else:
             self._offline = True
@@ -810,6 +812,8 @@ class MainWindow(QMainWindow):
         self._incomplete_question = None
         self._verified = None
         self._verified_view = {}
+        self._verified_options = {}
+        self._verified_content = ""
         if reset_scan:
             self._scroll_reader = None
             self._scroll_due = 0.0
@@ -927,14 +931,15 @@ class MainWindow(QMainWindow):
         """True when the frame still shows the question whose answer is on screen."""
         if self._verified is None:
             return False
-        _number, _answers, stem = self._verified
-        if match.question is not None:
-            return normalized(match.question.stem) == stem
-        visible, _options = screen_parts(text)
-        reading = normalized(clean_stem(visible))
-        if not reading:
+        number, _answers, stem = self._verified
+        if match.question is None or match.question.number != number:
             return False
-        return SequenceMatcher(None, reading, stem, autojunk=False).ratio() >= .6
+        return normalized(match.question.stem) == stem
+
+    @staticmethod
+    def _card_content(text: str) -> str:
+        leading, options = screen_parts(text)
+        return normalized(clean_stem(leading)) + "".join(normalized(value) for value in options.values())
 
     def _keep_verified_answer(self, match, text: str) -> bool:
         """Never downgrade a verified answer on the card the user just clicked.
@@ -943,15 +948,23 @@ class MainWindow(QMainWindow):
         turn a verified answer into bank-order letters. The question is
         unchanged, so the verified letters stay until the card really changes.
         """
-        if not self._same_card(match, text):
+        # A fuzzy candidate or changed option is new uncertainty, even when it
+        # points at the same bank entry. It must refresh the warning metadata.
+        if match.status not in {"matched", "reference", "incomplete"}:
             return False
-        if match.status != "matched":
-            return True
+        if not self._same_card(match, text) or complete_match(match):
+            return False
+        if self._card_content(text) != self._verified_content:
+            return False
         _number, answers, _stem = self._verified
-        if tuple(match.answers) == answers:
-            return True
-        # Different letters are only trusted when every option was read back.
-        return not complete_match(match)
+        if match.status == "matched" and tuple(match.answers) != answers:
+            return False
+        _leading, options = screen_parts(text)
+        for label, value in options.items():
+            value = normalized(value)
+            if self._verified_options.get(label) != value:
+                return False
+        return True
 
     def recognized(self, revision, result):
         if not self.tracker.finish(revision) or not self.running:
@@ -1022,6 +1035,8 @@ class MainWindow(QMainWindow):
             answers = match.answers or question.answers
             if match.status == "matched":
                 self._verified = (question.number, tuple(answers), normalized(question.stem))
+                self._verified_options = {label: normalized(value) for label, value in options.items()}
+                self._verified_content = self._card_content(text)
             self.answer.setText(" / ".join(answers))
             self.answer_detail.setPlainText(
                 f"{question.stem}\n\n" + "\n".join(f"{letter}. {options[letter]}" for letter in answers)

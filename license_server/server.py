@@ -21,8 +21,10 @@ from urllib.parse import urlsplit
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from license_server.db import ActivationError, activate, initialize, stats
+    from license_server.signing import KEY_NAME, load_key, sign_activation
 else:
     from .db import ActivationError, activate, initialize, stats
+    from .signing import KEY_NAME, load_key, sign_activation
 
 MAX_BODY = 8 * 1024
 ROOT = Path(__file__).resolve().parent
@@ -125,8 +127,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.db_path,
                 str(data.get("code", "")),
                 str(data.get("machine_id", "")),
+                now=int(self.server.clock()),
             )
-            self._send(HTTPStatus.OK, result)
+            self._send(HTTPStatus.OK, sign_activation(
+                result, str(data.get("code", "")), str(data.get("machine_id", "")),
+                self.server.signing_key))
         except ActivationError as error:
             self._send(error.http_status, error.as_dict())
         except Exception:
@@ -140,8 +145,11 @@ class LicenseServer(ThreadingHTTPServer):
     allow_reuse_address = True
     request_queue_size = 128
 
-    def __init__(self, address, db_path):
+    def __init__(self, address, db_path, *, signing_key=None, clock=time.time):
         self.db_path = Path(db_path)
+        key_path = Path(os.environ.get("NEWXKY_SIGNING_KEY", str(self.db_path.parent / KEY_NAME)))
+        self.signing_key = signing_key if signing_key is not None else load_key(key_path)
+        self.clock = clock
         try:
             limit = max(1, int(os.environ.get("NEWXKY_RATE_LIMIT", "120")))
         except ValueError:
@@ -159,7 +167,11 @@ def main() -> int:
         print("NEWXKY_LICENSE_PORT must be an integer", file=sys.stderr)
         return 2
     initialize(db_path)
-    server = LicenseServer((host, port), db_path)
+    try:
+        server = LicenseServer((host, port), db_path)
+    except (OSError, ValueError) as error:
+        print(f"Cannot load the server signing key: {error}", file=sys.stderr)
+        return 2
     print(f"NewXKY license service listening on http://{host}:{port}", flush=True)
     print(f"Database: {db_path}", flush=True)
     print("Put this service behind HTTPS before distributing the client.", flush=True)

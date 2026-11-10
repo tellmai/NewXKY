@@ -25,6 +25,7 @@ def packager(tmp_path,monkeypatch):
               'cache_sha256':module.digest(bank/'default-bank.json')}
     (bank/'manifest.json').write_text(json.dumps(manifest),encoding='utf-8')
     config={'license_server_url':module.LICENSE_SERVER_URL,
+            'license_public_key':module.LICENSE_PUBLIC_KEY,
             'version':module.VERSION,'bank_sha256':manifest['cache_sha256']}
     (app/'build-config.json').write_text(json.dumps(config),encoding='utf-8')
     monkeypatch.setattr(sys,'argv',['package_executable.py','--app-dir',str(app)])

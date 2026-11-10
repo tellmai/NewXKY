@@ -13,7 +13,9 @@ from uuid import uuid4
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from license_server import db
+from license_server.signing import KEY_NAME, load_key, public_key_text
 from newxky import __version__
+from newxky.license_config import LICENSE_PUBLIC_KEY
 
 
 def digest(path: Path) -> str:
@@ -27,15 +29,27 @@ def main() -> int:
                         default=ROOT / "dist" / f"NewXKY-LicenseServer-V{__version__}.zip")
     parser.add_argument("--db", type=Path,
                         default=ROOT / "license_server" / "data" / "licenses.db")
+    parser.add_argument("--signing-key", type=Path,
+                        default=ROOT / "license_server" / "data" / KEY_NAME)
+    parser.add_argument("--upgrade-only", action="store_true",
+                        help="omit the database; deploy only to a server with existing activation records")
     args = parser.parse_args()
+    try:
+        signing_key = load_key(args.signing_key)
+    except (OSError, ValueError) as error:
+        parser.error(f"server signing key missing or invalid: {error}")
+    if public_key_text(signing_key) != LICENSE_PUBLIC_KEY:
+        parser.error("server signing key does not match the client public key")
     database = args.db.resolve()
-    if not database.is_file():
-        parser.error(f"database missing: {database}")
-    stats = db.stats(database)
-    if not stats["total"]:
-        parser.error("database contains no codes")
-    with db.session(database) as connection:
-        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    stats = None
+    if not args.upgrade_only:
+        if not database.is_file():
+            parser.error(f"database missing: {database}")
+        stats = db.stats(database)
+        if not stats["total"]:
+            parser.error("database contains no codes")
+        with db.session(database) as connection:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     output = args.output.resolve()
     if not output.is_relative_to((ROOT / "dist").resolve()):
         parser.error("output must stay inside dist")
@@ -50,6 +64,7 @@ def main() -> int:
         service / "codes.py",
         service / "db.py",
         service / "server.py",
+        service / "signing.py",
         service / "generate_codes.py",
         service / "import_codes.py",
         service / "__init__.py",
@@ -59,8 +74,10 @@ def main() -> int:
         "format": "license-server",
         "version": __version__,
         "built_at": datetime.now().isoformat(timespec="seconds"),
-        "database_sha256": digest(database),
+        "database_sha256": None if args.upgrade_only else digest(database),
         "database": stats,
+        "upgrade_only": args.upgrade_only,
+        "license_public_key": LICENSE_PUBLIC_KEY,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(output.name + "." + uuid4().hex + ".partial")
@@ -68,8 +85,12 @@ def main() -> int:
         with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
             for path in sorted(files):
                 archive.write(path, f"{root_name}/license_server/{path.relative_to(service).as_posix()}")
+            if not args.upgrade_only:
+                archive.writestr(
+                    f"{root_name}/license_server/data/licenses.db", database.read_bytes()
+                )
             archive.writestr(
-                f"{root_name}/license_server/data/licenses.db", database.read_bytes()
+                f"{root_name}/license_server/data/{KEY_NAME}", args.signing_key.read_bytes()
             )
             archive.writestr(
                 f"{root_name}/build-info.json",
@@ -79,7 +100,8 @@ def main() -> int:
             names = archive.namelist()
             assert archive.testzip() is None
             assert not any(name.lower().endswith((".xlsx", ".xls", ".csv")) for name in names)
-            assert f"{root_name}/license_server/data/licenses.db" in names
+            assert (f"{root_name}/license_server/data/licenses.db" in names) == (not args.upgrade_only)
+            assert f"{root_name}/license_server/data/{KEY_NAME}" in names
             assert f"{root_name}/license_server/server.py" in names
         temporary.replace(output)
     finally:

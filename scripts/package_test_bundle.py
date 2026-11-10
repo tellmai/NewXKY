@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from newxky import __version__
 from newxky.runtime_manifest import missing_bank, missing_runtime
+from newxky.license_config import LICENSE_PUBLIC_KEY
+from license_server.signing import KEY_NAME, load_key, public_key_text
 
 
 def digest(path: Path) -> str:
@@ -43,6 +45,13 @@ def main() -> int:
         parser.error("test-license/licenses.db missing")
     if not (app / "test-license" / "测试验证码.txt").is_file():
         parser.error("test-license/测试验证码.txt missing")
+    key_path = app / "test-license" / KEY_NAME
+    try:
+        key = load_key(key_path)
+    except (OSError, ValueError) as error:
+        parser.error(f"test server signing key missing or invalid: {error}")
+    if public_key_text(key) != LICENSE_PUBLIC_KEY:
+        parser.error("test server signing key does not match the client public key")
 
     files = [
         path for path in (app / "_internal").rglob("*")
@@ -60,6 +69,7 @@ def main() -> int:
         server,
         app / "test-license" / "licenses.db",
         app / "test-license" / "测试验证码.txt",
+        key_path,
     ])
     for path in files:
         if not path.is_file():

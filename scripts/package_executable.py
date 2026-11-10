@@ -15,7 +15,8 @@ from uuid import uuid4
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from newxky import __version__
-from newxky.license_config import LICENSE_SERVER_URL
+from newxky.license_config import LICENSE_PUBLIC_KEY, LICENSE_SERVER_URL
+from newxky.license_lease import public_key
 from newxky.default_bank import SOURCE_PDF_NAME
 from newxky.runtime_manifest import missing_bank, missing_runtime
 
@@ -34,6 +35,10 @@ def main() -> int:
     parser.add_argument("--allow-local", action="store_true",
                         help="allow a localhost test build; never use for distribution")
     args = parser.parse_args()
+    try:
+        public_key(LICENSE_PUBLIC_KEY)
+    except (ValueError, TypeError):
+        parser.error("先运行 scripts/configure_license_signing.py 配置授权签名公钥")
     if not args.allow_local:
         address = str(LICENSE_SERVER_URL or "")
         if not address.startswith("https://") or any(
@@ -70,6 +75,8 @@ def main() -> int:
             parser.error(f"build-config.json missing or invalid: {error}")
         if built.get("license_server_url") != str(LICENSE_SERVER_URL or ""):
             parser.error("The built exe uses a different license address; rebuild before packaging")
+        if built.get("license_public_key") != LICENSE_PUBLIC_KEY:
+            parser.error("The built exe uses a different signing key; rebuild before packaging")
         if built.get('version')!=VERSION or built.get('bank_sha256')!=manifest['cache_sha256']:
             parser.error('The built exe has an older version or question bank; rebuild before packaging')
 
@@ -87,10 +94,10 @@ def main() -> int:
         "1. 将整个 ZIP 解压到普通文件夹，双击 NewXKY.exe；不要只复制 exe。\n"
         "2. 首次启动输入软件验证码。每个验证码只能激活一台电脑，可用 40 分钟。\n"
         "3. 40 分钟内关闭软件后可以重新打开；到期后该验证码失效，需要新的验证码。\n"
-        "4. 框住一道题的滚动区域，把答案窗口移到区域外，点击“开始识别”。\n"
-        "5. 选项不全时自动滚动补全题干与选项，全部核对后显示当前页面的答案字母。\n"
-        "6. 无法完全对应时，用红字标明题库顺序参考；请按选项内容核对。\n"
-        "7. 滚动时会临时将鼠标移入框内；不点击选项或换题按钮。按 Esc 或暂停识别停止。\n\n"
+        "4. 框住一道题的内容滚动区域，把答案窗口移到区域外，点击“开始识别”。\n"
+        "5. 默认启用“选项不全时自动滚动”；补全题干和全部选项后，按当前页面顺序显示正确字母和内容。\n"
+        "6. 未完整核对或仅匹配到相似题时，以红色参考显示并注明顺序；请核对题干和选项，也可用 Ctrl+F 搜题。\n"
+        "7. 自动滚动会临时移动鼠标并激活考试窗口，不点击选项或换题按钮。按 Esc 或“暂停识别”停止。\n\n"
         "如果双击 NewXKY.exe 没有反应、或提示缺少 DLL，请先双击同目录下的"
         "“运行环境检查.cmd”，它会指出缺少哪个文件。本程序需要 Windows 10 1809 或更新的"
         "64 位系统，并需要 Microsoft Visual C++ 2015-2022 运行库（x64）。\n\n"
@@ -115,6 +122,7 @@ def main() -> int:
         "source_modified": bool(status.strip()),
         "python": platform.python_version(),
         "license_server_url": str(LICENSE_SERVER_URL or ""),
+        "license_public_key": LICENSE_PUBLIC_KEY,
         "exe_sha256": digest(app / "NewXKY.exe"),
         "bank_sha256": digest(bundle / "default-bank.json"),
         "source_pdf": manifest,
@@ -144,7 +152,7 @@ def main() -> int:
     temporary = output.with_name(output.name + "." + uuid4().hex + ".partial")
     try:
         import zipfile
-        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
             for path in sorted(files):
                 archive.write(path, (Path("NewXKY") / path.relative_to(app)).as_posix())
         print("ZIP_CREATED_CHECKING", len(files), flush=True)

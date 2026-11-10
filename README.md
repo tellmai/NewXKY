@@ -1,9 +1,9 @@
-# NewXKY 区域答题助手 V1.1.0
+# NewXKY 区域答题助手 V3.0.1
 
 Windows 本地桌面程序。框选屏幕中的一道题，程序用本机 OCR 识别题干和选项，在内置题库中匹配正确答案。选项显示不全时自动在框内滚动，读完后按当前页面的字母显示答案；无法完全核对时用红字显示题库顺序参考。
 
 当前正式授权服务：`https://license.newxky-license.com`  
-正式免安装包：`dist\NewXKY-V1.1.0-Portable.zip`
+正式免安装包：`dist\NewXKY-V3.0.1-Portable.zip`
 
 ## 功能
 
@@ -24,6 +24,8 @@ Windows 本地桌面程序。框选屏幕中的一道题，程序用本机 OCR �
 4. 把安装包或本机授权记录复制到另一台电脑，验证码和服务端都会拒绝；客户端本地记录还使用 Windows DPAPI 加密并按机器指纹校验。
 5. 换电脑、重装系统或更换系统盘后，原验证码不能再次使用。
 
+V3.0.1 使用服务端 Ed25519 签名校验机器绑定和最长 40 分钟租约，拒绝篡改的有效期、时间偏移与未认证缓存。Windows 加密失败不会退回明文保存。旧 DPAPI 缓存首次升级需要联网确认，原到期时间不延长；请保持 Windows 时间与服务器一致，相差超过 5 分钟时先校准系统时间。
+
 授权由联网服务端判定，纯离线程序无法做到“验证码只能用一次、换机失效”。服务端部署见 [`license_server/README.md`](license_server/README.md)；从购买服务器/域名到 HTTPS 验证的逐步操作见 [`部署操作清单.md`](部署操作清单.md)。
 
 ## 题库来源与更新
@@ -37,11 +39,14 @@ Windows 本地桌面程序。框选屏幕中的一道题，程序用本机 OCR �
 - 当前：349 页、1,291 道有效题、0 条解析异常，来源统一显示为 **2026知识库**。
 - 运行时只读取 JSON，不加载 PDF，因此安装包不需要 pdfplumber/pdfminer，也不会出现 PDF 导入界面。
 - 更新题库后重新运行上面的命令，再按本文档重新构建 exe/ZIP。
+- 题目内容如需修订，必须先修改 Git 跟踪的源 PDF，再生成 JSON 与 manifest 并一并提交，不能只改缓存。当前 844 的 A/C、845 的 B/D 在源 PDF 中本就相同，本版按原文保留并正确计数匹配。
 - 如果 PDF 中新增题目，直接替换 `题库\2026年度知识考试复习资料.pdf` 后重新生成即可；解析异常会写入 `题库\manifest.json` 的 issues 数量并在构建输出中列出。
 
 ## 使用
 
 1. 安装包完整解压后双击 `NewXKY.exe`。不要只复制 exe，`_internal` 和 `题库` 文件夹必须保留。
+
+   runtime 免安装包使用 `runtime` 文件夹替代 `_internal`；请完整保留包内所有文件，运行时和 VC++ DLL 已随包提供。
 2. 输入分发的验证码，点击“激活软件”。
 3. 打开浏览器或小程序答题页，点击“框选 / 重选区域”，框住**一道题的内容滚动区域**；尽量包含题干和选项，可包含右侧滚动条。Esc 或右键取消。
 4. 把答案窗口移到框选区域外，点击“开始识别”。
@@ -72,7 +77,7 @@ Windows 本地桌面程序。框选屏幕中的一道题，程序用本机 OCR �
 
 主界面“软件说明”按钮显示当前版本、授权状态和剩余时间：
 
-- 版本：V1.1.0
+- 版本：V3.0.1
 - 状态：已验证 / 离线续用 / 授权已到期
 - 剩余时间：40 分钟倒计时
 - 隐私：截图、OCR 和题库匹配均在本机完成，不上传网络。
@@ -95,7 +100,7 @@ $env:NEWXKY_LICENSE_SERVER = 'http://127.0.0.1:8787'
 .\.venv\Scripts\python.exe main.py
 ```
 
-## 构建 V1.1.0 免安装包
+## 构建 V3.0.1 免安装包
 
 拿到公网 HTTPS 地址后，可以一步完成“写入地址 → 构建 → 免安装 ZIP → 服务端部署 ZIP”：
 
@@ -104,6 +109,14 @@ powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -LicenseServer http
 ```
 
 也可以分步执行：
+
+先生成或复用授权签名密钥：
+
+```powershell
+.\runtime\python.exe scripts\configure_license_signing.py
+```
+
+私钥保存在被 Git 忽略的 `license_server/data/lease-signing-key.pem`，公钥写入客户端配置；后续发版复用并备份同一私钥。先部署配套授权服务端，再分发新客户端。
 
 1. 先在 `newxky/license_config.py` 填入公网 HTTPS 授权地址：
 
@@ -138,8 +151,8 @@ powershell -ExecutionPolicy Bypass -File scripts\release.ps1 -LicenseServer http
 输出：
 
 ```text
-dist\NewXKY-V1.1.0-Portable.zip
-dist\NewXKY-V1.1.0-Portable.zip.sha256
+dist\NewXKY-V3.0.1-Portable.zip
+dist\NewXKY-V3.0.1-Portable.zip.sha256
 ```
 
 包内只包含程序、运行库、OCR 模型和 `题库/default-bank.json`，不包含 PDF、人员资料、授权码或本机 `data`。
@@ -152,7 +165,7 @@ dist\NewXKY-V1.1.0-Portable.zip.sha256
 .\runtime\python.exe scripts\package_runtime.py
 ```
 
-它会把程序源码、`题库`、`assets` 和 `runtime` 组装到 `dist\release-runtime-<时间戳>\NewXKY`，用 Windows 自带的 C# 编译器（`csc.exe`）编译一个 `NewXKY.exe` 启动器（源码见 `scripts/launcher.cs`），再打成 `dist\NewXKY-V1.1.0-Portable.zip`。用户侧体验与 PyInstaller 版一致：解压后双击 `NewXKY.exe`。
+它会把程序源码、`题库`、`assets` 和 `runtime` 组装到 `dist\release-runtime-<时间戳>\NewXKY`，用 Windows 自带的 C# 编译器（`csc.exe`）编译一个 `NewXKY.exe` 启动器（源码见 `scripts/launcher.cs`），再打成 `dist\NewXKY-V3.0.1-Portable.zip`。用户侧体验与 PyInstaller 版一致：解压后双击 `NewXKY.exe`。
 
 - 默认会剔除客户端用不到的包（playwright、ddddocr、pdfplumber、openpyxl 等），加 `--keep-runtime` 可保留完整运行时。
 - 打包前会校验 `题库/default-bank.json` 与 `manifest.json`、源 PDF 的哈希，并在打包后实际导入 PySide6/OCR 依赖做一次自检，不通过不会生成 ZIP。
@@ -164,7 +177,27 @@ dist\NewXKY-V1.1.0-Portable.zip.sha256
 .\.venv\Scripts\python.exe scripts\package_server.py
 ```
 
-输出 `dist\NewXKY-LicenseServer-V1.1.0.zip`，上传服务器后按 [`license_server/README.md`](license_server/README.md) 配置 systemd 和 Caddy。
+输出 `dist\NewXKY-LicenseServer-V3.0.1.zip`，上传服务器后按 [`license_server/README.md`](license_server/README.md) 配置 systemd 和 Caddy。
+
+### 精简 runtime 免安装包
+
+构建机已有 `runtime` 时，可直接生成自带 Python、Qt、OCR 模型和 VC++ DLL 的免安装 ZIP：
+
+```powershell
+.\runtime\python.exe scripts\package_runtime.py
+```
+
+默认剔除浏览器自动化、PDF/Excel 工具、未使用的 Qt 模块、FFmpeg 和字节码缓存，保留截图、自动滚动、OCR、授权签名校验所需组件。生成的 ZIP 可直接在 Windows 10 1809+ / Windows 11 的 64 位电脑上完整解压运行，无需另装 Python。
+
+`--reuse --dist-root ...` 只允许复用源码、题库和当前分支完全一致的目录；旧版本、不同题库或残留旧模块会被拒绝，避免把旧程序重新标成新版本。
+
+只升级已有授权服务器、无需初始验证码数据库时：
+
+```powershell
+.\runtime\python.exe scripts\package_server.py --upgrade-only --output dist\NewXKY-LicenseServer-V3.0.1-Update.zip
+```
+
+更新包保留现网激活记录，包含服务端签名私钥，只用于服务器维护，不能交给客户端用户。
 
 > 正式包必须填入公网 HTTPS 地址后重新构建；未配置地址时打包脚本会拒绝生成正式 ZIP。
 
@@ -173,7 +206,7 @@ dist\NewXKY-V1.1.0-Portable.zip.sha256
 如果没有公网授权地址，可以使用：
 
 ```text
-dist\NewXKY-V1.1.0-WindowsTest.zip
+dist\NewXKY-V3.0.1-WindowsTest.zip
 ```
 
 解压后双击 `启动测试版.cmd`，它会先启动随包的 `NewXKY-TestLicenseServer.exe`，再启动软件。验证码在 `test-license\测试验证码.txt`，共 5 个，每个只能激活一台电脑、可用 40 分钟。此包仅用于功能验收，不能作为正式分发包；正式分发必须使用公网 HTTPS 授权服务。
@@ -251,4 +284,4 @@ scripts/
 
 ## 依赖
 
-运行依赖：PySide6-Essentials、RapidOCR（ONNX Runtime 模型）、OpenCV、NumPy、Pillow。授权服务端只用 Python 标准库；生成 Excel 需要 openpyxl（仅开发/分发工具）。第三方许可见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+运行依赖：PySide6-Essentials、RapidOCR（ONNX Runtime 模型）、OpenCV、NumPy、Pillow、cryptography。授权服务端使用 Python 标准库和 cryptography 签发租约；生成 Excel 需要 openpyxl（仅开发/分发工具）。第三方许可见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。

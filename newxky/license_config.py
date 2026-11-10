@@ -6,3 +6,4 @@ an empty value cannot activate and shows a configuration error instead.
 """
 
 LICENSE_SERVER_URL = 'https://license.newxky-license.com'  # Set to the public HTTPS address before building a release.
+LICENSE_PUBLIC_KEY = 'uyQEoc6Zfm8GmQBK4tOWu0/Egx9NP8wfAV5ZByVyMtI='

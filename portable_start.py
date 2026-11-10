@@ -8,6 +8,9 @@ from pathlib import Path
 
 
 def main():
+    # The runtime-based EXE must honour the embedded release endpoint just as
+    # a PyInstaller EXE does, rather than inheriting development overrides.
+    sys._newxky_packaged = True
     root = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--data-dir", type=Path, default=root / "data")

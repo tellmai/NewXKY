@@ -26,15 +26,24 @@ SERVICE_FILE="/etc/systemd/system/newxky-license.service"
 CADDYFILE="/etc/caddy/Caddyfile"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 
-if [[ ! -f "$SOURCE_DIR/data/licenses.db" ]]; then
-  echo "部署包缺少 data/licenses.db，请使用官方 NewXKY-LicenseServer ZIP。" >&2
+if [[ ! -f "$SOURCE_DIR/data/licenses.db" && ! -f "$TARGET_DIR/data/licenses.db" ]]; then
+  echo "没有初始数据库或现网数据库；更新包只能用于已有授权服务，请使用完整服务端包首次部署。" >&2
+  exit 1
+fi
+if [[ ! -f "$SOURCE_DIR/data/lease-signing-key.pem" ]]; then
+  echo "部署包缺少授权签名私钥，请重新生成配套的服务端 ZIP。" >&2
+  exit 1
+fi
+if [[ -f "$TARGET_DIR/data/lease-signing-key.pem" ]] && \
+   ! cmp -s "$SOURCE_DIR/data/lease-signing-key.pem" "$TARGET_DIR/data/lease-signing-key.pem"; then
+  echo "部署包签名密钥与现网不一致，已停止。请使用现网私钥重新构建客户端与服务端包。" >&2
   exit 1
 fi
 
 echo "==> 安装系统依赖"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y python3 ca-certificates curl gnupg openssl unzip debian-keyring debian-archive-keyring apt-transport-https
+apt-get install -y python3 python3-cryptography ca-certificates curl gnupg openssl unzip debian-keyring debian-archive-keyring apt-transport-https
 
 if ! command -v caddy >/dev/null 2>&1; then
   echo "==> 安装 Caddy（自动 HTTPS）"
@@ -51,7 +60,7 @@ id newxky >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin newxky
 install -d -o newxky -g newxky "$TARGET_DIR" "$TARGET_DIR/data"
 
 echo "==> 复制服务端代码（保留已有激活数据库）"
-for file in __init__.py codes.py db.py server.py generate_codes.py import_codes.py README.md; do
+for file in __init__.py codes.py db.py server.py signing.py generate_codes.py import_codes.py README.md; do
   if [[ -f "$SOURCE_DIR/$file" ]]; then
     install -m 0644 -o newxky -g newxky "$SOURCE_DIR/$file" "$TARGET_DIR/$file"
   fi
@@ -61,6 +70,9 @@ if [[ ! -f "$TARGET_DIR/data/licenses.db" ]]; then
   echo "    已复制初始验证码数据库。"
 else
   echo "    检测到已有数据库，保留现网激活记录。"
+fi
+if [[ ! -f "$TARGET_DIR/data/lease-signing-key.pem" ]]; then
+  install -m 0640 -o newxky -g newxky "$SOURCE_DIR/data/lease-signing-key.pem" "$TARGET_DIR/data/lease-signing-key.pem"
 fi
 chown -R newxky:newxky "$APP_ROOT"
 

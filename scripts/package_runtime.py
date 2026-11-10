@@ -29,7 +29,8 @@ sys.path.insert(0, str(ROOT))
 
 from newxky import __version__  # noqa: E402
 from newxky.default_bank import CACHE_NAME, BUNDLE_DIRECTORY, SOURCE_PDF_NAME  # noqa: E402
-from newxky.license_config import LICENSE_SERVER_URL  # noqa: E402
+from newxky.license_config import LICENSE_PUBLIC_KEY, LICENSE_SERVER_URL  # noqa: E402
+from newxky.license_lease import public_key  # noqa: E402
 
 VERSION = __version__
 CSC_CANDIDATES = (
@@ -44,10 +45,38 @@ PRUNE_PACKAGES = (
     "playwright", "pyee", "greenlet",
     "ddddocr", "pypdfium2", "pypdfium2_cfg", "pypdfium2_cli", "pypdfium2_raw",
     "pdfminer", "pdfplumber", "websockets",
-    "cryptography", "cffi", "pycparser",
     "openpyxl", "et_xmlfile",
+    "bin",              # playwright's driver directory
 )
 PRUNE_DIRECTORIES = {"__pycache__"}
+
+# Stdlib the client never imports (verified by running the test suite against
+# the pruned runtime). sqlite3 stays: the licensing tests and server tools use it.
+PRUNE_STDLIB = frozenset({
+    "ensurepip", "idlelib", "pydoc_data", "venv", "distutils", "lib2to3",
+    "asyncio", "xml", "unittest", "tkinter", "turtledemo",
+})
+
+# Qt modules the application actually imports: QtCore/QtGui/QtWidgets only.
+# Everything else (Quick, Qml, Designer, Network, Sql, translations, qml/) goes.
+QT_KEEP = frozenset({
+    "__init__.py", "_config.py", "_git_pyside_version.py",
+    "pyside6.abi3.dll", "pyside6.abi3.lib",
+    "QtCore.pyd", "QtGui.pyd", "QtWidgets.pyd",
+    "Qt6Core.dll", "Qt6Gui.dll", "Qt6Widgets.dll",
+    "plugins",
+})
+QT_KEEP_PLUGINS = {
+    "platforms": frozenset({"qwindows.dll", "qoffscreen.dll"}),
+    "styles": frozenset({"qmodernwindowsstyle.dll"}),
+    "imageformats": frozenset({"qico.dll"}),
+}
+# OpenCV's video/FFmpeg backend is not used by screenshot OCR.
+PRUNE_CV2_PREFIXES = ("opencv_videoio_ffmpeg",)
+CRT_FILES = (
+    "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll",
+    "msvcp140_1.dll", "msvcp140_2.dll", "msvcp140_codecvt_ids.dll", "concrt140.dll",
+)
 
 
 def digest(path: Path) -> str:
@@ -65,14 +94,38 @@ def pruned(name: str) -> bool:
 
 def copy_runtime(source: Path, target: Path, *, keep: bool) -> dict:
     before = sum(file.stat().st_size for file in source.rglob("*") if file.is_file())
+    pyside = "Lib/site-packages/PySide6"
 
     def ignore(directory, names):
         dropped = {name for name in names if name in PRUNE_DIRECTORIES}
-        if not keep:
-            dropped |= {name for name in names if pruned(name)}
+        if keep:
+            return dropped
+        dropped |= {name for name in names if pruned(name)}
+        relative = Path(directory).relative_to(source).as_posix()
+        if relative == "Lib":
+            dropped |= {name for name in names if name in PRUNE_STDLIB}
+        elif relative == "Lib/site-packages/cv2":
+            dropped |= {name for name in names if name.startswith(PRUNE_CV2_PREFIXES)}
+        elif relative == pyside:
+            dropped |= {name for name in names if name not in QT_KEEP}
+        elif relative == f"{pyside}/plugins":
+            dropped |= {name for name in names if name not in QT_KEEP_PLUGINS}
+        elif relative.startswith(f"{pyside}/plugins/"):
+            allowed = QT_KEEP_PLUGINS.get(relative.rsplit("/", 1)[-1], frozenset())
+            dropped |= {name for name in names if name not in allowed}
         return dropped
 
     shutil.copytree(source, target, ignore=ignore)
+    # Qt wheels carry the redistributable C++ runtime, which a fresh PC may
+    # lack. Keep one copy beside python.exe rather than relying on System32
+    # or duplicating it in the pruned Qt tree.
+    for name in CRT_FILES:
+        destination = target / name
+        if not destination.is_file():
+            origin = source / "Lib/site-packages/PySide6" / name
+            if not origin.is_file():
+                raise SystemExit(f"缺少可分发的 VC++ 运行库：{name}")
+            shutil.copy2(origin, destination)
     after = sum(file.stat().st_size for file in target.rglob("*") if file.is_file())
     return {"bytes_before": before, "bytes_after": after}
 
@@ -127,10 +180,20 @@ def compile_launcher(app: Path) -> Path:
     if compiler is None:
         raise SystemExit("找不到 .NET 编译器 csc.exe，无法生成 NewXKY.exe")
     target = app / "NewXKY.exe"
+    version_source = app.parent / "launcher-version.cs"
+    version_source.write_text(
+        'using System.Reflection;\n'
+        '[assembly: AssemblyTitle("NewXKY")]\n'
+        '[assembly: AssemblyProduct("NewXKY")]\n'
+        f'[assembly: AssemblyVersion("{VERSION}.0")]\n'
+        f'[assembly: AssemblyFileVersion("{VERSION}.0")]\n'
+        f'[assembly: AssemblyInformationalVersion("{VERSION}")]\n',
+        encoding="utf-8",
+    )
     result = subprocess.run(
         [str(compiler), "/nologo", "/target:winexe", "/platform:anycpu", "/codepage:65001",
          "/optimize+", f"/win32icon:{ROOT / 'assets' / 'NewXKY.ico'}",
-         f"/out:{target}", str(ROOT / "scripts" / "launcher.cs")],
+         f"/out:{target}", str(ROOT / "scripts" / "launcher.cs"), str(version_source)],
         cwd=str(ROOT), capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0 or not target.is_file():
@@ -175,9 +238,14 @@ for %%F in (
   "runtime\pythonw.exe"
   "runtime\python311.dll"
   "runtime\vcruntime140.dll"
+  "runtime\vcruntime140_1.dll"
+  "runtime\msvcp140.dll"
+  "runtime\msvcp140_1.dll"
+  "runtime\msvcp140_2.dll"
   "runtime\Lib\site-packages\PySide6\Qt6Core.dll"
   "runtime\Lib\site-packages\PySide6\plugins\platforms\qwindows.dll"
   "runtime\Lib\site-packages\rapidocr_onnxruntime\__init__.py"
+  "runtime\Lib\site-packages\cryptography\hazmat\bindings\_rust.pyd"
 ) do (
   if exist "%%~F" (echo   [ ok ] %%~F) else (echo   [MISS] %%~F & set "MISSING=1")
 )
@@ -216,10 +284,10 @@ USAGE_TXT = """NewXKY 区域答题助手 V{version} 免安装版
 1. 将整个 ZIP 解压到普通文件夹（不要在压缩包里直接双击），双击 NewXKY.exe。
 2. 首次启动输入软件验证码。每个验证码只能激活一台电脑，可用 40 分钟。
 3. 40 分钟内关闭软件后可以重新打开；到期后该验证码失效，需要新的验证码。
-4. 框住一道题的滚动区域，把答案窗口移到区域外，点击“开始识别”。
-5. 选项不全时自动滚动补全题干与选项，全部核对后显示当前页面的答案字母。
-6. 无法完全对应时，用红字标明题库顺序参考；请按选项内容核对。
-7. 滚动时会临时将鼠标移入框内；不点击选项或换题按钮。按 Esc 或暂停识别停止。
+4. 框住一道题的内容滚动区域，把答案窗口移到区域外，点击“开始识别”。
+5. 默认启用“选项不全时自动滚动”；程序补全题干和全部选项后，按当前页面顺序显示正确字母和内容。
+6. 未完整核对或仅匹配到相似题时，答案以红色参考显示并注明顺序；请核对题干和选项，也可用 Ctrl+F 关键词搜题。
+7. 自动滚动会临时移动鼠标并激活考试窗口，不点击选项或换题按钮。按 Esc 或“暂停识别”停止；关闭自动滚动后可手动滚动。
 
 必须保留 runtime 与 题库 两个文件夹，它们和 NewXKY.exe 是一套的。
 
@@ -240,20 +308,106 @@ def write_launchers(app: Path) -> None:
     (app / "使用说明.txt").write_text(USAGE_TXT.format(version=VERSION), encoding="utf-8")
 
 
+VERIFY_IMPORTS = """
+import PySide6.QtWidgets, cv2, numpy, PIL.Image, onnxruntime, rapidocr_onnxruntime
+import newxky.ui, newxky.scroll_scan, newxky.region_scroll, newxky.licensing, newxky.selfcheck, newxky.license_lease
+print("imports ok")
+"""
+
+VERIFY_QT = """
+import os
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+from pathlib import Path
+from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtGui import QIcon
+from newxky.bank import read_bank
+from newxky.matching import KnowledgeIndex
+from newxky.scroll_scan import ScrollReader, complete_match
+from newxky.ui import MainWindow
+from types import SimpleNamespace
+
+root = Path.cwd()
+app = QApplication([])
+window = QMainWindow()
+window.setWindowIcon(QIcon(str(root / "assets" / "NewXKY.ico")))
+assert not window.windowIcon().isNull(), "icon failed to load"
+window.show()
+
+bank = read_bank(root / "题库" / "default-bank.json")
+question = bank.questions[0]
+labels = list(question.options)
+order = list(reversed(labels))
+text = question.stem + "\\n" + "\\n".join(
+    f"{label}. {question.options[old]}" for label, old in zip(labels, order))
+match = KnowledgeIndex(bank.questions).lookup(text)
+assert complete_match(match), match.status
+expected = tuple(label for label, old in zip(labels, order) if old in question.answers)
+assert match.answers == expected, "screen letters did not follow reordered options"
+manager = SimpleNamespace(can_use=True, server_url="", last_error="", expired=False,
+                          remaining_seconds=lambda:2399, reload_lease=lambda:None, touch=lambda:None)
+MainWindow.warm_ocr = lambda self:None
+MainWindow.start_license_refresh = lambda self:None
+main = MainWindow(manager, bank, data_dir=root / "data-selfcheck", app_dir=root)
+main.running = True
+main.tracker.observe(b"verified frame", 0)
+main.recognized(main.tracker.begin(), (text, match, .1))
+assert main.answer.text() == " / ".join(expected), "UI did not show current screen letters"
+assert question.stem in main.answer_detail.toPlainText(), "stem missing from answer"
+main.close()
+window.close()
+print("qt ok", match.status)
+"""
+
+VERIFY_OCR = """
+import io
+from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
+from newxky.ocr import LocalOCR
+
+font_path = Path("C:/Windows/Fonts/msyh.ttc")
+if not font_path.exists():
+    print("ocr skipped (no font)")
+else:
+    font = ImageFont.truetype(str(font_path), 22)
+    image = Image.new("RGB", (700, 60), "white")
+    ImageDraw.Draw(image).text((10, 10), "企业数据安全管理", font=font, fill=(20, 20, 20))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    text = LocalOCR().recognize(buffer.getvalue(), clip_edges=True)
+    assert text.strip(), "OCR returned no text"
+    print("ocr ok", text.strip()[:16])
+"""
+
+
 def verify_application(app: Path) -> None:
+    for name in CRT_FILES:
+        if not (app / "runtime" / name).is_file():
+            raise SystemExit(f"构建目录缺少 VC++ 运行库：{name}")
     python = app / "runtime" / "python.exe"
-    environment = dict(os.environ, QT_QPA_PLATFORM="offscreen", PYTHONIOENCODING="utf-8")
-    checks = [
-        ("imports", "import PySide6.QtWidgets, cv2, numpy, PIL.Image, onnxruntime, "
-                    "rapidocr_onnxruntime, newxky.ui; print('imports ok')"),
-        ("qt", "from PySide6.QtWidgets import QApplication; app=QApplication([]);"
-               "from PySide6.QtGui import QIcon; print('qt ok')"),
-    ]
+    environment = dict(os.environ, PYTHONIOENCODING="utf-8")
+    checks = (("imports", VERIFY_IMPORTS), ("qt", VERIFY_QT), ("ocr", VERIFY_OCR))
     for label, code in checks:
         result = subprocess.run([str(python), "-c", code], cwd=str(app), env=environment,
                                 capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             raise SystemExit(f"打包校验失败（{label}）：\n{result.stdout}\n{result.stderr}")
+        print(f"  {label}: {result.stdout.strip().splitlines()[-1] if result.stdout.strip() else 'ok'}",
+              flush=True)
+
+
+def verify_reusable_sources(app: Path) -> None:
+    sources = [ROOT / "main.py", ROOT / "portable_start.py", *sorted((ROOT / "newxky").glob("*.py"))]
+    pairs = [(source, app / source.relative_to(ROOT)) for source in sources]
+    pairs += [(ROOT / BUNDLE_DIRECTORY / name, app / BUNDLE_DIRECTORY / name)
+              for name in (CACHE_NAME, "manifest.json")]
+    pairs += [(ROOT / "README.md", app / "使用说明.md"),
+              (ROOT / "THIRD_PARTY_NOTICES.md", app / "THIRD_PARTY_NOTICES.md")]
+    stale = [str(target.relative_to(app)) for source, target in pairs
+             if not target.is_file() or digest(source) != digest(target)]
+    extra = {path.name for path in (app / "newxky").glob("*.py")} - {
+        path.name for path in (ROOT / "newxky").glob("*.py")}
+    if stale or extra:
+        raise SystemExit("复用目录的源码或题库与当前分支不一致，请重新构建：" + "、".join(stale + sorted(extra)))
 
 
 def zip_application(app: Path, output: Path) -> None:
@@ -264,12 +418,13 @@ def zip_application(app: Path, output: Path) -> None:
     files += sorted((app / "assets").glob("*"))
     files += sorted((app / BUNDLE_DIRECTORY).glob("*"))
     files += sorted((app / "runtime").rglob("*"))
-    files = [path for path in files if path.is_file()]
+    files = [path for path in files if path.is_file()
+             and "__pycache__" not in path.parts and path.suffix != ".pyc"]
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(output.name + "." + uuid4().hex + ".partial")
     try:
         with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED,
-                             compresslevel=6) as archive:
+                             compresslevel=9) as archive:
             for path in files:
                 archive.write(path, (Path("NewXKY") / path.relative_to(app)).as_posix())
         with zipfile.ZipFile(temporary) as archive:
@@ -297,6 +452,12 @@ def main() -> int:
                         help="重新打包 --dist-root 下已组装好的目录（跳过复制与编译）")
     args = parser.parse_args()
 
+    try:
+        public_key(LICENSE_PUBLIC_KEY)
+    except (ValueError, TypeError):
+        parser.error("先运行 scripts/configure_license_signing.py 配置授权签名公钥")
+    if not str(LICENSE_SERVER_URL).startswith("https://"):
+        parser.error("正式包必须配置 HTTPS 授权服务地址")
     runtime = args.runtime.resolve()
     check_runtime(runtime)
     manifest = verify_bank()
@@ -311,6 +472,7 @@ def main() -> int:
     if args.reuse:
         if not (app / "NewXKY.exe").is_file():
             parser.error(f"--reuse 需要已组装好的目录：{app}")
+        verify_reusable_sources(app)
         print("REUSE_APP", flush=True)
     else:
         if app.exists():
@@ -335,23 +497,34 @@ def main() -> int:
         "sha256": digest(executable),
         "size": executable.stat().st_size,
     }
+    source_files = [app / "main.py", app / "portable_start.py", *sorted((app / "newxky").glob("*.py"))]
     revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
                               capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
                            capture_output=True, text=True).stdout.strip()
+    branch = subprocess.run(["git", "branch", "--show-current"], cwd=ROOT,
+                            capture_output=True, text=True).stdout.strip()
     (app / "build-info.json").write_text(json.dumps({
         "format": "portable-runtime",
         "product": "NewXKY",
         "version": VERSION,
         "built_at": datetime.now().isoformat(timespec="seconds"),
         "source_revision": revision,
+        "source_branch": branch,
         "source_modified": bool(dirty),
+        "source_sha256": {path.relative_to(app).as_posix(): digest(path) for path in source_files},
         "python": sys.version.split()[0],
         "license_server_url": str(LICENSE_SERVER_URL or ""),
+        "license_public_key": LICENSE_PUBLIC_KEY,
         "launcher": executable_info,
         "runtime_bytes": sizes,
         "runtime": "pruned" if not args.keep_runtime else "full",
-        "pruned_packages": [] if args.keep_runtime else list(PRUNE_PACKAGES),
+        "pruned_packages": [] if args.keep_runtime else sorted(PRUNE_PACKAGES),
+        "pruned_stdlib": [] if args.keep_runtime else sorted(PRUNE_STDLIB),
+        "pruned_qt": [] if args.keep_runtime else sorted({"Qt modules except QtCore/QtGui/QtWidgets",
+                                                         "plugins: platforms, styles, imageformats/qico",
+                                                         "translations, qml, resources, metatypes, typesystems"}),
+        "pruned_opencv": [] if args.keep_runtime else list(PRUNE_CV2_PREFIXES),
         "bank": manifest,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 

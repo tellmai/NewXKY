@@ -1,6 +1,14 @@
 # 授权服务端部署
 
-NewXKY 的验证码必须由服务端判定“首次激活、绑定哪台电脑、40 分钟何时到期”。客户端不保存明文验证码的服务端副本，服务端数据库只保存 SHA-256 哈希。
+NewXKY 的验证码必须由服务端判定“首次激活、绑定哪台电脑、40 分钟何时到期”。服务端数据库只保存 SHA-256 哈希，V3.0.1 起由 Ed25519 私钥签发租约，客户端用内置公钥验证签名。
+
+## V3.0.1 签名授权升级
+
+1. 构建机执行 `runtime\python.exe scripts\configure_license_signing.py`，生成或复用 `license_server/data/lease-signing-key.pem`，并把公钥写入客户端配置。正式密钥必须备份和复用，不要每次发版重新生成。
+2. 先部署配套服务端，再分发客户端。旧客户端仍能调用同一激活接口；新客户端拒绝无签名响应。旧缓存只有联网重新确认后才能继续使用，原到期时间不延长。
+3. 只更新现有服务器时，运行 `runtime\python.exe scripts\package_server.py --upgrade-only --output dist\NewXKY-LicenseServer-V3.0.1-Update.zip`。它不包含验证码数据库；`deploy.sh` 保留线上 `licenses.db`，已有私钥与更新包不一致时会停止。
+4. 服务端更新包包含签名私钥，只用于服务器部署，不能公开分发。客户端包只含公钥。密钥和数据库都要备份。
+5. 手动安装服务端时需安装 `python3-cryptography`；`deploy.sh` 会自动安装。自定义私钥路径可通过 `NEWXKY_SIGNING_KEY` 设置，默认使用数据库同目录的 `lease-signing-key.pem`。
 
 ## 大陆服务器（北京/上海/广州）先确认 ICP 备案
 
@@ -22,12 +30,14 @@ NewXKY 的验证码必须由服务端判定“首次激活、绑定哪台电脑�
 
 ```text
 license_server/
-  server.py          HTTP API（标准库，无第三方依赖）
+  server.py          HTTP API（标准库 HTTP + cryptography 签名）
+  signing.py         Ed25519 租约签发（仅服务端持有私钥）
   db.py              SQLite schema、单次激活事务
   codes.py           验证码格式、哈希
   generate_codes.py  生成 20 个 Excel 并播种数据库（需要 openpyxl）
   import_codes.py    从已有 Excel 导入
   data/licenses.db   验证码哈希和激活记录
+  data/lease-signing-key.pem  签名私钥（不可放进客户端）
 ```
 
 ## 1. 生成验证码
@@ -67,7 +77,7 @@ license_server/
 在 Windows 本机项目目录上传部署包：
 
 ```powershell
-scp .\dist\NewXKY-LicenseServer-V1.0.9.zip root@服务器公网IP:/tmp/
+scp .\dist\NewXKY-LicenseServer-V3.0.1.zip root@服务器公网IP:/tmp/
 ssh root@服务器公网IP
 ```
 
@@ -76,7 +86,7 @@ ssh root@服务器公网IP
 ```bash
 apt update && apt install -y unzip openssl
 cd /opt
-unzip /tmp/NewXKY-LicenseServer-V1.0.9.zip
+unzip /tmp/NewXKY-LicenseServer-V3.0.1.zip
 cd NewXKY-LicenseServer
 TOKEN=$(openssl rand -hex 24)
 bash license_server/deploy.sh license.你的域名.com "$TOKEN"
@@ -100,11 +110,11 @@ curl -H "X-Admin-Token: 你的TOKEN" https://license.你的域名.com/api/v1/adm
 ```bash
 # 1. 基础环境
 sudo apt update
-sudo apt install -y python3 unzip caddy
+sudo apt install -y python3 python3-cryptography unzip caddy
 
-# 2. 解压部署包（上传 NewXKY-LicenseServer-V1.0.9.zip 到 /tmp）
+# 2. 解压部署包（上传 NewXKY-LicenseServer-V3.0.1.zip 到 /tmp）
 sudo mkdir -p /opt/newxky
-sudo unzip /tmp/NewXKY-LicenseServer-V1.0.9.zip -d /opt/
+sudo unzip /tmp/NewXKY-LicenseServer-V3.0.1.zip -d /opt/
 sudo mv /opt/NewXKY-LicenseServer/license_server /opt/newxky/
 sudo useradd -r -s /usr/sbin/nologin newxky || true
 sudo chown -R newxky:newxky /opt/newxky

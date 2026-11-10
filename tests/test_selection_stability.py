@@ -192,3 +192,105 @@ def test_complete_reread_with_different_letters_still_updates(tmp_path, monkeypa
         assert window.answer.text() == "A"
     finally:
         window.close()
+
+
+def test_shared_stem_and_answer_letters_do_not_reuse_the_previous_question(tmp_path, monkeypatch):
+    first = question()
+    second = Question(2, "单选", first.stem,
+                      {"A": "第二道题错误内容", "B": "第二道题正确内容"}, ("B",), (2,))
+    window = build(tmp_path, monkeypatch, [first, second])
+    try:
+        for q, seed in [(first, b"first"), (second, b"second")]:
+            text = q.stem + "\n" + "\n".join(f"{k}. {v}" for k, v in q.options.items())
+            show(window, text, window.index.lookup(text), seed)
+        assert second.options["B"] in window.answer_detail.toPlainText()
+        assert first.options["B"] not in window.answer_detail.toPlainText()
+        assert "第 2 题" in window.provenance.text()
+    finally:
+        window.close()
+
+
+def test_similarity_metadata_updates_before_and_after_an_exact_match(tmp_path, monkeypatch):
+    q = question()
+    window = build(tmp_path, monkeypatch, [q])
+    try:
+        show(window, q.stem, Match("candidate", "请核对题干", q, score=.82))
+        assert "82%" in window.provenance.text()
+        show(window, q.stem, Match("candidate", "请核对题干", q, score=.93), b"clearer")
+        assert "93%" in window.provenance.text() and "82%" not in window.provenance.text()
+        text = q.stem + "\n" + "\n".join(f"{k}. {v}" for k, v in q.options.items())
+        show(window, text, window.index.lookup(text), b"exact")
+        assert "相似度" not in window.provenance.text()
+        assert window.status.text() == "已核对网页选项"
+        show(window, text.replace("属于", "不属于"), Match("candidate", "请核对题干差异", q, score=.75),
+             b"changed-stem")
+        assert window.status.text() == "相似题待核对"
+        assert "75%" in window.provenance.text()
+        assert window.answer.text().startswith("参考")
+    finally:
+        window.close()
+
+
+def test_changed_negation_cannot_keep_an_old_verified_answer(tmp_path, monkeypatch):
+    q = question()
+    window = build(tmp_path, monkeypatch, [q])
+    try:
+        text = q.stem + "\n" + "\n".join(f"{k}. {v}" for k, v in q.options.items())
+        show(window, text, window.index.lookup(text))
+        altered = text.replace("属于", "不属于")
+        result = window.index.lookup(altered)
+        assert result.status == "candidate"
+        show(window, altered, result, b"negation")
+        assert window.status.text() == "相似题待核对"
+        assert window.answer.text().startswith("参考")
+        assert "请核对题干差异" in window.provenance.text()
+    finally:
+        window.close()
+
+
+def test_unknown_similar_stem_clears_the_previous_verified_answer(tmp_path, monkeypatch):
+    q = question()
+    window = build(tmp_path, monkeypatch, [q])
+    try:
+        text = q.stem + "\n" + "\n".join(f"{k}. {v}" for k, v in q.options.items())
+        show(window, text, window.index.lookup(text))
+        show(window, q.stem + "另一项要求", Match("missing", "题库未收录"), b"unknown")
+        assert window.answer.text() == "—"
+        assert window.provenance.text() == ""
+    finally:
+        window.close()
+
+
+def test_partial_reread_with_reordered_visible_options_does_not_keep_old_letters(tmp_path, monkeypatch):
+    q = Question(1, "单选", "测试部分选项换序", {
+        "A": "甲的完整内容", "B": "乙的完整内容", "C": "丙的完整内容", "D": "丁的完整内容",
+    }, ("B",), (1,))
+    window = build(tmp_path, monkeypatch, [q])
+    try:
+        text = q.stem + "\n" + "\n".join(f"{k}. {v}" for k, v in q.options.items())
+        show(window, text, window.index.lookup(text))
+        reordered = q.stem + "\nA. " + q.options["B"] + "\nB. " + q.options["A"]
+        match = window.index.lookup(reordered)
+        assert match.status == "matched" and match.answers == ("A",)
+        show(window, reordered, match, b"partial-reordered")
+        assert window.answer.text() == "A"
+    finally:
+        window.close()
+
+
+def test_changed_partial_option_cannot_restore_an_old_verified_snapshot(tmp_path, monkeypatch):
+    q = Question(1, "单选", "测试部分选项内容变化", {
+        "A": "甲的完整内容", "B": "乙的完整内容", "C": "丙的完整内容", "D": "丁的完整内容",
+    }, ("B",), (1,))
+    window = build(tmp_path, monkeypatch, [q])
+    try:
+        text = q.stem + "\n" + "\n".join(f"{k}. {v}" for k, v in q.options.items())
+        show(window, text, window.index.lookup(text))
+        altered = text[:text.rfind("\nD.")].replace("甲的", "不是甲的")
+        match = window.index.lookup(altered)
+        assert match.status == "reference"
+        show(window, altered, match, b"changed-partial-option")
+        assert window.status.text() != "已核对网页选项"
+        assert "题库顺序" in window.provenance.text()
+    finally:
+        window.close()

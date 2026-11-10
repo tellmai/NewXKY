@@ -16,6 +16,8 @@ if (-not (Test-Path $Python)) {
 $version = (& $Python -c "import sys; sys.path.insert(0, '.'); from newxky import __version__; print(__version__)").Trim()
 if ($LASTEXITCODE -ne 0 -or -not $version) { throw '无法读取版本号 newxky/__init__.py' }
 
+& $Python scripts\configure_license_signing.py
+if ($LASTEXITCODE -ne 0) { throw '授权签名配置失败' }
 & $Python scripts\set_license_url.py $LicenseServer
 if ($LASTEXITCODE -ne 0) { throw '授权地址无效' }
 

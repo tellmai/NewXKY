@@ -3,12 +3,11 @@
 The license service is authoritative: it binds a code to the first computer
 that activates it and rejects every other computer.  The local lease only
 avoids a network round trip when the application is closed and reopened within
-the same hour; it is encrypted with Windows DPAPI and still checked against the
-machine fingerprint on every start.
+the same 40-minute period; its server signature and machine binding are checked
+on every start, with Windows DPAPI protecting the local copy.
 """
 from __future__ import annotations
 
-import base64
 import ctypes
 import hashlib
 import json
@@ -24,15 +23,15 @@ import urllib.parse
 import urllib.request
 import uuid
 from ctypes import wintypes
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
 from . import __version__
-from .license_config import LICENSE_SERVER_URL
+from .license_config import LICENSE_PUBLIC_KEY, LICENSE_SERVER_URL
+from .license_lease import SESSION_SECONDS, verify_lease
 
-SESSION_SECONDS = 40 * 60
 CLOCK_ROLLBACK_TOLERANCE = 5 * 60
 TOUCH_INTERVAL = 15
 
@@ -54,6 +53,7 @@ ERROR_MESSAGES = {
     "machine_mismatch": "本机授权记录不属于当前电脑，请重新激活。",
     "clock_rollback": "系统时间异常，请校准 Windows 时间后重试。",
     "local_store": "无法读写本机授权记录，请检查软件目录写入权限。",
+    "bad_signature": "授权签名验证失败，请联网重新激活或联系软件提供者更新授权服务。",
 }
 
 
@@ -89,7 +89,7 @@ def format_remaining(seconds: int | float) -> str:
 def configured_server_url() -> str:
     """Return the compiled release address; source runs may use a local override."""
     configured = str(LICENSE_SERVER_URL or "").strip().rstrip("/")
-    if not getattr(sys, "frozen", False):
+    if not (getattr(sys, "frozen", False) or getattr(sys, "_newxky_packaged", False)):
         override = os.environ.get("NEWXKY_LICENSE_SERVER", "").strip().rstrip("/")
         if override:
             configured = override
@@ -115,10 +115,13 @@ class LicenseState:
     clock_offset: int
     last_seen_at: int
     server_url: str
+    lease: dict = field(default_factory=dict)
+    signature: str = ""
 
     def remaining(self, now: int | float | None = None) -> int:
         local_now = int(time.time() if now is None else now)
-        server_now = local_now + int(self.clock_offset)
+        # Offline expiry must not depend on an editable local clock offset.
+        server_now = max(local_now, int(self.lease.get("issued_at", local_now)))
         return max(0, int(self.expires_at) - server_now)
 
     def as_dict(self) -> dict:
@@ -130,6 +133,8 @@ class LicenseState:
             "clock_offset": int(self.clock_offset),
             "last_seen_at": int(self.last_seen_at),
             "server_url": self.server_url,
+            "lease": self.lease,
+            "signature": self.signature,
         }
 
     @classmethod
@@ -140,6 +145,8 @@ class LicenseState:
             raise ValueError("授权记录不完整")
         if not valid_code(data["code"]) or not re.fullmatch(r"[0-9a-f]{64}", str(data["machine_id"])):
             raise ValueError("授权记录格式错误")
+        if not isinstance(data.get("lease", {}), dict) or not isinstance(data.get("signature", ""), str):
+            raise ValueError("授权签名格式错误")
         return cls(
             code=normalize_code(data["code"]),
             machine_id=str(data["machine_id"]),
@@ -148,6 +155,8 @@ class LicenseState:
             clock_offset=int(data["clock_offset"]),
             last_seen_at=int(data["last_seen_at"]),
             server_url=str(data["server_url"]),
+            lease=data.get("lease", {}),
+            signature=data.get("signature", ""),
         )
 
 
@@ -199,7 +208,7 @@ def _dpapi_call(data: bytes, *, protect: bool) -> bytes | None:
 
 
 class LicenseStore:
-    """Atomic local lease storage; DPAPI-protected on Windows when available."""
+    """Atomic local leases; Windows never falls back from DPAPI to plaintext."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -216,18 +225,20 @@ class LicenseStore:
                 payload = _dpapi_call(raw[7:], protect=False)
                 if payload is None:
                     return None
-            elif raw.startswith(b"JSON1\n"):
-                payload = base64.b64decode(raw[6:], validate=True)
+            elif sys.platform != "win32" and raw.startswith(b"JSON2\n"):
+                payload = raw[6:]
             else:
-                payload = raw
+                return None
             return LicenseState.from_dict(json.loads(payload.decode("utf-8")))
-        except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        except (ValueError, TypeError, OverflowError, UnicodeDecodeError):
             return None
 
     def save(self, state: LicenseState):
         payload = json.dumps(state.as_dict(), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         protected = _dpapi_call(payload, protect=True)
-        raw = b"DPAPI1\n" + protected if protected is not None else b"JSON1\n" + base64.b64encode(payload)
+        if sys.platform == "win32" and protected is None:
+            raise LicenseError("local_store", "Windows 无法加密授权记录，请检查当前用户的加密服务。")
+        raw = b"DPAPI1\n" + protected if protected is not None else b"JSON2\n" + payload
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.path.with_suffix(".tmp")
@@ -340,6 +351,8 @@ class LicenseApi:
                 data = json.loads(body.decode("utf-8"))
             except (ValueError, UnicodeDecodeError):
                 data = {}
+            if not isinstance(data, dict):
+                raise LicenseError("bad_response") from error
             code_name = str(data.get("error") or "server_error")
             raise LicenseError(code_name, data.get("message")) from error
         except (urllib.error.URLError, TimeoutError, OSError) as error:
@@ -351,7 +364,9 @@ class LicenseApi:
             data = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as error:
             raise LicenseError("bad_response") from error
-        if not isinstance(data, dict) or not data.get("ok"):
+        if not isinstance(data, dict):
+            raise LicenseError("bad_response")
+        if not data.get("ok"):
             raise LicenseError(str(data.get("error") or "server_error"), data.get("message"))
         try:
             int(data["expires_at"])
@@ -374,6 +389,7 @@ class LicenseManager:
         clock: Callable[[], float] = time.time,
         store: LicenseStore | None = None,
         api: LicenseApi | None = None,
+        public_key: str | None = None,
     ):
         self.data_dir = Path(data_dir)
         self.server_url = str(server_url if server_url is not None else configured_server_url()).rstrip("/")
@@ -381,6 +397,7 @@ class LicenseManager:
         self.clock = clock
         self.store = store or LicenseStore(self.data_dir / "license.dat")
         self.api = api or LicenseApi(self.server_url)
+        self.public_key = LICENSE_PUBLIC_KEY if public_key is None else public_key
         self.state: LicenseState | None = None
         self.expired = False
         self.last_error = ""
@@ -407,9 +424,34 @@ class LicenseManager:
         self._anchor_monotonic = time.monotonic()
         self._anchor_remaining = self.state.remaining(now) if self.state is not None else 0
 
+    def _claims(self, code: str, lease: dict, signature: str) -> dict:
+        if not self.public_key:
+            raise LicenseError("not_configured", "客户端尚未配置授权签名公钥，请联系软件提供者。")
+        try:
+            return verify_lease(lease, signature, self.public_key, code, self.machine_id)
+        except ValueError as error:
+            raise LicenseError("bad_signature") from error
+
+    def _response_state(self, code: str, data: dict, now: int) -> LicenseState:
+        claims = self._claims(code, data.get("lease"), data.get("signature"))
+        if any(data.get(name) != claims[name] for name in ("activated_at", "expires_at")):
+            raise LicenseError("bad_signature")
+        if data.get("server_time") != claims["issued_at"]:
+            raise LicenseError("bad_signature")
+        if abs(now - claims["issued_at"]) > CLOCK_ROLLBACK_TOLERANCE:
+            raise LicenseError("clock_rollback")
+        state = LicenseState(code, self.machine_id, claims["activated_at"],
+                             claims["expires_at"], 0, now, self.server_url,
+                             claims, data["signature"])
+        if state.remaining(now) <= 0:
+            raise LicenseError("expired")
+        return state
+
     def restore(self) -> bool:
         """Load a valid lease without requiring the network."""
         with self._lock:
+            self.state = None
+            self.expired = False
             try:
                 state = self.store.load()
             except LicenseError as error:
@@ -417,14 +459,30 @@ class LicenseManager:
                 return False
             if state is None:
                 return False
-            self.state = state
             if state.machine_id != self.machine_id:
                 self.store.clear()
                 self.state = None
                 self.last_error = ERROR_MESSAGES["machine_mismatch"]
                 return False
+            # Upgrade a legacy DPAPI record only after an online server check.
+            # Its local expiry and clock fields never grant offline access.
+            if not state.lease and not state.signature:
+                try:
+                    self.activate(state.code)
+                    return True
+                except LicenseError as error:
+                    self.last_error = error.message
+                    return False
+            try:
+                claims = self._claims(state.code, state.lease, state.signature)
+                if (state.activated_at != claims["activated_at"]
+                        or state.expires_at != claims["expires_at"] or state.clock_offset != 0):
+                    raise LicenseError("bad_signature")
+            except LicenseError as error:
+                self.last_error = error.message
+                return False
             now = int(self.clock())
-            if now < state.last_seen_at - CLOCK_ROLLBACK_TOLERANCE:
+            if now < max(state.last_seen_at, claims["issued_at"]) - CLOCK_ROLLBACK_TOLERANCE:
                 self.expired = True
                 self.last_error = ERROR_MESSAGES["clock_rollback"]
                 return False
@@ -433,6 +491,7 @@ class LicenseManager:
                 self.last_error = ERROR_MESSAGES["expired"]
                 return False
             state.last_seen_at = now
+            self.state = state
             self._write(state)
             self._anchor(now)
             return True
@@ -443,19 +502,7 @@ class LicenseManager:
         data = self.api.activate(normalized, self.machine_id)
         with self._lock:
             now = int(self.clock())
-            server_time = int(data["server_time"])
-            expires_at = int(data["expires_at"])
-            if expires_at <= server_time:
-                raise LicenseError("expired")
-            state = LicenseState(
-                code=normalized,
-                machine_id=self.machine_id,
-                activated_at=int(data.get("activated_at") or server_time),
-                expires_at=expires_at,
-                clock_offset=server_time - now,
-                last_seen_at=now,
-                server_url=self.server_url,
-            )
+            state = self._response_state(normalized, data, now)
             saved = self._write(state)
             self.state = state
             self.expired = False
@@ -471,25 +518,22 @@ class LicenseManager:
             if self.state is None:
                 raise LicenseError("expired")
             code = self.state.code
-        data = self.api.activate(code, self.machine_id)
+        try:
+            data = self.api.activate(code, self.machine_id)
+            now = int(self.clock())
+            state = self._response_state(code, data, now)
+        except LicenseError as error:
+            if error.code in {"expired", "already_used", "invalid_code", "disabled",
+                              "bad_signature", "clock_rollback"}:
+                with self._lock:
+                    if self.state is not None and self.state.code == code:
+                        self.expired = True
+                        self.last_error = error.message
+            raise
         with self._lock:
             if self.state is None or self.state.code != code:
                 return self.remaining_seconds()
-            now = int(self.clock())
-            server_time = int(data["server_time"])
-            expires_at = int(data["expires_at"])
-            remaining = int(data.get("remaining_seconds", max(0, expires_at - server_time)))
-            if remaining <= 0 or expires_at <= server_time:
-                self.expired = True
-                self.last_error = ERROR_MESSAGES["expired"]
-                self.state.last_seen_at = now
-                self._write(self.state)
-                raise LicenseError("expired")
-            self.state.activated_at = int(data.get("activated_at") or self.state.activated_at)
-            self.state.expires_at = expires_at
-            self.state.clock_offset = server_time - now
-            self.state.last_seen_at = now
-            self.state.server_url = self.server_url
+            self.state = state
             saved = self._write(self.state)
             self.expired = False
             if saved:
@@ -513,7 +557,7 @@ class LicenseManager:
     def reload_lease(self):
         """Update the lease after the application was idle (e.g. system sleep)."""
         with self._lock:
-            if self.state is not None and self.state.remaining(self.clock()) <= 0:
+            if self.state is not None and self.remaining_seconds() <= 0:
                 self.expired = True
                 self.last_error = ERROR_MESSAGES["expired"]
 

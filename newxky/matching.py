@@ -1,7 +1,7 @@
 """Match verified content and restore screen order from visible letter anchors."""
 import re
 import unicodedata
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from functools import lru_cache
@@ -237,18 +237,32 @@ class KnowledgeIndex:
         stem = normalized(clean_stem(stem_text))
         whole = normalized(text)
         contained = [i for i, key in enumerate(self.stems) if key and key in whole]
+        exact = [i for i, key in enumerate(self.stems) if key and key == stem]
+        # Exclude only occurrences inside complete, recognised bank options.
+        # A longer choice may quote another question's stem; an extra stem
+        # appended after that choice must still count as a second question.
+        bank_options = {normalized(value) for i in exact
+                        for value in self.questions[i].options.values()}
+        option_spans = []
+        for label, value in options.items():
+            value = normalized(value)
+            if not value or value not in bank_options:
+                continue
+            prefix = normalized(label)
+            token = prefix + value
+            start = whole.find(token)
+            while start >= 0:
+                option_spans.append((start + len(prefix), start + len(token)))
+                start = whole.find(token, start + 1)
         # Generic stems (e.g. "以下说法正确的是") can be a suffix of a longer
         # bank stem. Count separate occurrences, not nested stem substrings.
         spans = set()
-        option_contents = {normalized(value) for value in options.values()}
         for key in {self.stems[i] for i in contained}:
-            # A choice can itself be another bank's judgment statement. It is
-            # not a second exam card merely because its whole text is indexed.
-            if key in option_contents and key != stem:
-                continue
             start = whole.find(key)
             while start >= 0:
-                spans.add((start, start + len(key)))
+                end = start + len(key)
+                if not any(left <= start and end <= right for left, right in option_spans):
+                    spans.add((start, end))
                 start = whole.find(key, start + 1)
         separate = [span for span in spans if not any(
             other != span and other[0] <= span[0] and span[1] <= other[1] for other in spans)]
@@ -256,16 +270,18 @@ class KnowledgeIndex:
             return Match("ambiguous", "区域中识别到多个题干，请只框选一道完整题目")
         # Equality prevents an extra leading negation from turning a different
         # question into a match, even if the original stem is a substring.
-        exact = [i for i, key in enumerate(self.stems) if key and key == stem]
         resolved = []
         for i in exact:
             q = self.questions[i]
             visible = {k: normalized(v) for k, v in options.items()}
             bank_values = [normalized(v) for v in q.options.values()]
-            if len(set(bank_values)) != len(bank_values):
+            if Counter(visible.values()) != Counter(bank_values):
                 continue
-            if len(visible) != len(bank_values) or sorted(visible.values()) != sorted(bank_values):
-                continue
+            correctness = defaultdict(set)
+            for label, value in q.options.items():
+                correctness[normalized(value)].add(label in q.answers)
+            if any(len(flags) > 1 for flags in correctness.values()):
+                return Match("ambiguous", "相同选项内容在题库中有不同的正确性，请核对原文")
             correct = {normalized(q.options[a]) for a in q.answers}
             answers = tuple(sorted(k for k, v in visible.items() if v in correct))
             resolved.append((q, answers))
@@ -292,6 +308,16 @@ class KnowledgeIndex:
         if recovered:
             exact = list(recovered)
         if exact:
+            # A shared generic stem is not enough to identify a question, but
+            # complete visible option contents can narrow its bank entries.
+            # Preserve multiplicity: two equal correct options still need two
+            # visible labels before a partial card can yield all answer letters.
+            visible_counts = Counter(normalized(value) for value in options.values())
+            compatible = [i for i in exact if visible_counts
+                          and visible_counts <= Counter(normalized(value)
+                                                       for value in self.questions[i].options.values())]
+            if compatible:
+                exact = compatible
             candidates = [self.questions[i] for i in exact]
             outcomes = {frozenset(normalized(q.options[a]) for a in q.answers) for q in candidates}
             if len(outcomes) != 1:
@@ -307,8 +333,11 @@ class KnowledgeIndex:
                 visible = {label: normalized(value) for label, value in options.items()}
                 bank_values = {normalized(value) for value in q.options.values()}
                 correct = {normalized(q.options[label]) for label in q.answers}
-                if (len(set(visible.values())) == len(visible) and set(visible.values()).issubset(bank_values)
-                        and correct.issubset(visible.values())):
+                bank_counts = Counter(normalized(value) for value in q.options.values())
+                correct_counts = Counter(normalized(q.options[label]) for label in q.answers)
+                consistent = all(correct_counts[value] == bank_counts[value] for value in correct_counts)
+                if (Counter(visible.values()) <= bank_counts and consistent
+                        and correct_counts <= Counter(visible.values())):
                     answers = tuple(sorted(label for label, value in visible.items() if value in correct))
                     return Match("matched", "题干与正确选项内容已核对，答案字母已按当前画面对应", q, answers, options, 1)
                 # If the answer content is not visible at all, the exam page is
@@ -316,10 +345,14 @@ class KnowledgeIndex:
                 # letters; ask the user to bring all options into the region.
                 bank_contents = {normalized(value) for value in q.options.values() if normalized(value)}
                 present_contents = {value for value in bank_contents if value in whole}
-                if len(present_contents) < len(bank_contents) and not correct.issubset(present_contents):
+                missing_copies = any(count > 1 and Counter(visible.values())[value] < count
+                                     for value, count in correct_counts.items())
+                if (missing_copies or (len(present_contents) < len(bank_contents)
+                                       and not correct.issubset(present_contents))):
+                    seen_count = len(options) if options else len(present_contents)
                     return Match(
                         "incomplete",
-                        f"题干已匹配；当前画面只识别到 {len(present_contents)}/{len(bank_contents)} 个选项，"
+                        f"题干已匹配；当前画面只识别到 {seen_count}/{len(q.options)} 个选项，"
                         "答案可能在未显示的选项里。请向下滚动考试页面，直到全部选项进入框选区域，"
                         "程序会自动重新识别；如题干移出框，请适当调大或上移框选区域。",
                         q, options=options, score=1,

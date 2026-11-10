@@ -96,6 +96,23 @@ def test_question_switch_discards_previously_collected_choices():
     assert last.match.answers==('C',)
 
 
+def test_switch_between_shared_stems_resets_collected_choices_and_scroll_budget():
+    old = question()
+    new = Question(2, '单选', old.stem, {
+        'A': '新题第一项完整内容', 'B': '新题第二项完整内容',
+        'C': '新题第三项完整内容', 'D': '新题第四项完整内容',
+    }, ('C',), (2,))
+    reader = ScrollReader(KnowledgeIndex([old, new]), max_steps=2)
+    assert feed(reader, frame(old, 'AB')).direction == -1
+    assert feed(reader, frame(old, 'B', False)).direction == -1
+    # The stem is identical; the observed options identify a new bank entry.
+    assert feed(reader, frame(new, 'AB', True, 'ABCD')).direction == -1
+    assert reader.steps == 1
+    last = feed(reader, frame(new, 'BCD', False, 'ABCD'))
+    assert complete_match(last.match) and last.match.question is new
+    assert last.match.answers == ('C',)
+
+
 def test_a_conflicting_repeated_label_cannot_give_verified_answer():
     q=question()
     reader=ScrollReader(KnowledgeIndex([q]))
